@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" role="img" aria-label="NineRustRouter">
+  <title>NineRustRouter</title>
+  <!-- Optical small variant of the master mark (web/src/assets/logo.svg). The
+       terminal dots are dropped and the stroke thickened: at 16px the dots fill
+       the fork's counters and the mark renders as a solid blob. The fusion of
+       branch and tip into one round-capped stroke keeps the three-route read. -->
+  <rect id="nrr-fav-badge" x="0" y="0" width="32" height="32" rx="7" fill="#0a0a0a"/>
+  <g id="nrr-fav-mark" fill="none" stroke="#f97815" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round">
+    <circle id="nrr-fav-bowl" cx="12.4" cy="9.9" r="4.9"/>
+    <path id="nrr-fav-routes" d="M17.3 9.9V17.6L10.2 24.1M17.3 17.6V25M17.3 17.6L24.4 24.1"/>
+  </g>
+</svg>

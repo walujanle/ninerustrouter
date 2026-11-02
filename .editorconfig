@@ -1,0 +1,26 @@
+# Editor defaults so a contributor's editor does not fight the formatters.
+# rustfmt and Biome are authoritative; this only stops an editor from
+# re-indenting a file before either runs.
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{rs,toml}]
+indent_style = space
+indent_size = 4
+
+# Biome formats the frontend with tabs.
+[*.{ts,tsx,js,jsx,vue,json,jsonc,css}]
+indent_style = tab
+
+[*.md]
+# Markdown uses trailing spaces for a hard line break.
+trim_trailing_whitespace = false
+
+[*.{bat,cmd}]
+end_of_line = crlf

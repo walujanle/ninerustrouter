@@ -1,0 +1,252 @@
+name: Release
+
+# A `v*` tag cuts a release: six platform binaries attached to a GitHub
+# Release. `workflow_dispatch` runs the same build without cutting a release, so
+# a leg can be exercised without burning a version.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      is_tag: ${{ steps.version.outputs.is_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Resolve version and assert tag agreement
+        id: version
+        run: |
+          version="$(tr -d '[:space:]' < PROJECT_VERSION)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "is_tag=true" >> "$GITHUB_OUTPUT"
+            tag="${GITHUB_REF_NAME#v}"
+            if [ "$tag" != "$version" ]; then
+              echo "tag $GITHUB_REF_NAME does not match PROJECT_VERSION $version" >&2
+              exit 1
+            fi
+          else
+            echo "is_tag=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Assert every manifest agrees with PROJECT_VERSION
+        run: node scripts/set-version.mjs --check
+
+  # The gates CI runs, run again on the tag. A tag can be pushed at a commit
+  # that never went through a pull request, and an artifact is not tied to a CI
+  # run: without this a released binary can carry a lint failure, a failing test
+  # or a known-vulnerable dependency.
+  gate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y cmake clang
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - run: cargo install cargo-audit --locked
+      - run: cargo audit
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm audit --audit-level=high
+        working-directory: web
+
+  frontend:
+    needs: [verify]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+        working-directory: web
+      - run: npm run build
+        working-directory: web
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+          if-no-files-found: error
+
+  build:
+    needs: [verify, gate, frontend]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-amd64
+            os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            asset: ninerustrouter-linux-amd64
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            asset: ninerustrouter-linux-arm64
+          - name: macos-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            asset: ninerustrouter-macos-arm64
+          - name: windows-x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: ninerustrouter-windows-x64
+            ext: .exe
+          - name: windows-arm64
+            os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            asset: ninerustrouter-windows-arm64
+            ext: .exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.name }}
+
+      # aws-lc-sys (the rustls backend) compiles C and assembly with cmake, so
+      # the Linux legs need a C toolchain and cmake before cargo runs.
+      - name: Install Linux build tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y cmake clang
+      - name: Install macOS build tools
+        if: runner.os == 'macOS'
+        run: brew install cmake || true
+
+      - name: Build (native)
+        shell: bash
+        run: cargo build --release --locked --target ${{ matrix.target }} -p ninerustrouter
+
+      # The asset is a zip holding the bare executable, so unpacking it yields
+      # `ninerustrouter` (or `ninerustrouter.exe`) with no version in the name.
+      # The `.zip` is what gets hashed: that is the artifact a user downloads.
+      - name: Package asset
+        shell: bash
+        run: |
+          version="${{ needs.verify.outputs.version }}"
+          asset="${{ matrix.asset }}-${version}"
+          bin="target/${{ matrix.target }}/release/ninerustrouter${{ matrix.ext }}"
+          mkdir -p dist
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp "$bin" dist/ninerustrouter.exe
+            powershell -NoProfile -Command \
+              "Compress-Archive -Path 'dist/ninerustrouter.exe' -DestinationPath 'dist/${asset}.zip' -Force"
+            rm -f dist/ninerustrouter.exe
+          else
+            cp "$bin" dist/ninerustrouter
+            ( cd dist && zip -q "${asset}.zip" ninerustrouter && rm ninerustrouter )
+          fi
+          if command -v sha256sum >/dev/null; then
+            sha256sum "dist/${asset}.zip" | cut -d' ' -f1 > "dist/${asset}.zip.sha256"
+          else
+            shasum -a 256 "dist/${asset}.zip" | cut -d' ' -f1 > "dist/${asset}.zip.sha256"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+
+  # Android is its own job, not a matrix leg. The NDK is only published for an
+  # x86_64 Linux host (no `linux-aarch64` archive exists), and the ARM runner
+  # image ships no Android SDK at all, so the leg has to run on ubuntu-24.04
+  # where the image sets ANDROID_NDK_HOME. Kept separate so the native legs
+  # carry no android-only steps.
+  build-android:
+    needs: [verify, gate, frontend]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android-aarch64
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+      - name: Build (android)
+        # API 24 matches build-android.sh's default; cargo-ndk would otherwise
+        # link against API 21.
+        run: cargo ndk -t arm64-v8a --platform 24 build --release --locked -p ninerustrouter
+      - name: Package asset
+        run: |
+          version="${{ needs.verify.outputs.version }}"
+          asset="ninerustrouter-linux-android-aarch64-${version}"
+          mkdir -p dist
+          cp target/aarch64-linux-android/release/ninerustrouter dist/ninerustrouter
+          ( cd dist && zip -q "${asset}.zip" ninerustrouter && rm ninerustrouter )
+          sha256sum "dist/${asset}.zip" | cut -d' ' -f1 > "dist/${asset}.zip.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binary-linux-android-aarch64
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    needs: [verify, build, build-android]
+    if: needs.verify.outputs.is_tag == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: binary-*
+          path: dist
+          merge-multiple: true
+      - name: Build release notes from the changelog
+        run: node scripts/extract-changelog.mjs "${{ needs.verify.outputs.version }}" > notes.md
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # A re-run of a tag whose release leg failed lands here with the
+          # release already created. Creating it again is an error, so treat an
+          # existing release as done.
+          if gh release view "v${{ needs.verify.outputs.version }}" >/dev/null 2>&1; then
+            echo "release v${{ needs.verify.outputs.version }} already exists, skipping"
+          else
+            gh release create "v${{ needs.verify.outputs.version }}" dist/* \
+              --title "v${{ needs.verify.outputs.version }}" \
+              --notes-file notes.md \
+              --verify-tag
+          fi

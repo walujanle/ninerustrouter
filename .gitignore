@@ -1,0 +1,29 @@
+# Rust
+/target/
+**/target/
+Cargo.lock.bak
+
+# Build output from build-production.bat
+/ninerustrouter-binary/
+
+# Node
+node_modules/
+**/node_modules/
+web/dist/
+
+# Secrets and local state
+.env
+.env.*
+!.env.example
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# Session handoff notes
+.ai/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+*.swp

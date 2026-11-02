@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="192" height="192" viewBox="0 0 192 192" role="img" aria-label="NineRustRouter">
+  <title>NineRustRouter</title>
+  <defs>
+    <linearGradient id="nrr-i192-grad" gradientUnits="userSpaceOnUse" x1="96" y1="25.5" x2="96" y2="166.5">
+      <stop offset="0" stop-color="#f97815"/>
+      <stop offset="1" stop-color="#c2590a"/>
+    </linearGradient>
+  </defs>
+  <rect id="nrr-i192-badge" x="0" y="0" width="192" height="192" rx="42" fill="#0a0a0a"/>
+  <g id="nrr-i192-mark" fill="none" stroke="url(#nrr-i192-grad)" stroke-width="16.5" stroke-linecap="round" stroke-linejoin="round">
+    <circle id="nrr-i192-bowl" cx="76.9" cy="61.5" r="27.75"/>
+    <path id="nrr-i192-routes" d="M104.6 61.5V109.5L69.6 138.9M104.6 109.5V155.3M104.6 109.5L139.7 138.9"/>
+  </g>
+  <g id="nrr-i192-terminals" fill="url(#nrr-i192-grad)" stroke="none">
+    <circle cx="69.6" cy="138.9" r="11.25"/>
+    <circle cx="104.6" cy="155.3" r="11.25"/>
+    <circle cx="139.7" cy="138.9" r="11.25"/>
+  </g>
+</svg>
