@@ -5,7 +5,7 @@ entry points are, and how the pieces connect. It is a map, not a replacement for
 docs — `docs/PLAN.md` is still the architecture record, and `AGENTS.md` holds the editing
 rules. Use this when you know roughly what you want to change and need the exact file.
 
-Version indexed: `PROJECT_VERSION` = 0.1.0 (workspace 0.1.0, Rust edition 2024, MSRV 1.88).
+Version indexed: `PROJECT_VERSION` = 0.1.0 (workspace 0.1.0, Rust edition 2024, MSRV 1.89).
 
 ## The two hard constraints
 
@@ -501,11 +501,11 @@ UI primitives (`src/components/ui/`): `UiButton`, `UiCard`, `UiInput`, `UiSelect
 | `build.sh` | Linux/macOS production build: frontend first then backend, memory-sized cargo jobs, emits `ninerustrouter-binary/ninerustrouter` (plus the versioned zip with `--release-name`). |
 | `build.bat` | Windows production build: `npm run build` then `cargo build --release`, emits `ninerustrouter-binary\ninerustrouter.exe` and the versioned zip. |
 | `build-android.sh` | Android aarch64 build (Termux native or NDK cross), memory-sized, emits `ninerustrouter-binary/ninerustrouter-linux-android-aarch64`. |
-| `.github/workflows/ci.yml` | CI on push/PR: fmt, clippy `-D warnings`, workspace tests, MSRV 1.88 check, frontend build, advisory cargo/npm audit. |
+| `.github/workflows/ci.yml` | CI on push/PR: fmt, clippy `-D warnings`, workspace tests, MSRV 1.89 check, frontend build, advisory cargo/npm audit. |
 | `.github/workflows/release.yml` | `v*` tag release: verify version, build web-dist, six platform zips (+sha256) incl. Android, create GitHub Release from CHANGELOG. Publishes nothing to a registry. |
 | `scripts/set-version.mjs` | Propagates `PROJECT_VERSION` into every manifest (Cargo.toml, Cargo.lock, web package+lock); `--check` verifies without writing. |
 | `scripts/extract-changelog.mjs` | Prints the CHANGELOG section for a version (falls back to Unreleased) for the GitHub Release body. |
-| `rust-toolchain.toml` | Pins the verified toolchain (1.97.1) with rustfmt + clippy; MSRV floor stays 1.88. |
+| `rust-toolchain.toml` | Pins the verified toolchain (1.97.1) with rustfmt + clippy; MSRV floor stays 1.89. |
 | `PROJECT_VERSION` | Single version source (0.1.0). |
 | `Cargo.toml` | Workspace root: four members, shared dependency versions, release profile (thin LTO, codegen-units=1, stripped). |
 | `crates/*/Cargo.toml` | Per-crate manifests. Feature flags live here, versions in the workspace. |

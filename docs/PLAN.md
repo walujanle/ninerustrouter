@@ -82,7 +82,7 @@ Four crates. `router-sse` stays HTTP-free so it can be unit-tested on its own, a
 
 `axum 0.8`, `tokio`, `tower-http`, `reqwest` (rustls, `stream`, `socks`, `multipart`, `json`, `cookies`), `rusqlite` (bundled), `serde` + `serde_json` **with `preserve_order`**, `bcrypt`, `dashmap`, `futures`, `tokio-util`, `async-stream`, `base64`, `sha2`, `uuid`, `regex`, `thiserror`, `tracing`, `rust-embed`, `toml_edit`, `dirs`, `which`, `chrono`. The dashboard signing is a hand-rolled HS256 (`crates/router-server/src/auth/jwt.rs`), so there is no JWT crate.
 
-Resolved versions live in `Cargo.lock`. The workspace pins `edition = "2024"` and `rust-version = "1.88"`, the highest MSRV in the current tree. Frontend versions are in `web/package.json`; TypeScript is deliberately held at 6.x because `vue-tsc` 3.3 imports TypeScript's `./lib/tsc` export, which TypeScript 7 drops.
+Resolved versions live in `Cargo.lock`. The workspace pins `edition = "2024"` and `rust-version = "1.89"`, the highest MSRV in the current tree. Frontend versions are in `web/package.json`; TypeScript is deliberately held at 6.x because `vue-tsc` 3.3 imports TypeScript's `./lib/tsc` export, which TypeScript 7 drops.
 
 Session signing is byte-compatible with the `jose` library (`crates/router-server/src/auth/jwt.rs`). The protected header is exactly `{"alg":"HS256"}` with no `typ`, base64url is unpadded, the payload keeps insertion order, and `exp` is rejected at `exp <= now` with no clock tolerance. The `alg` is pinned before the key is touched, so an `alg: "none"` or `alg: "HS512"` token cannot be accepted. A token minted by one side verifies on the other only while these hold.
 

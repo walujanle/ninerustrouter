@@ -51,7 +51,7 @@ write `ninerustrouter-binary/`. `./build-android.sh` cross-compiles for Android
 aarch64 (native Termux or NDK) and sizes the cargo job count to the machine's
 free memory so a small device is not OOM-killed; `--help` lists its flags.
 
-Toolchain floor is Rust 1.88 (`edition = "2024"`); that is the highest MSRV among the current
+Toolchain floor is Rust 1.89 (`edition = "2024"`); that is the highest MSRV among the current
 dependency tree, so do not lower it. `npx biome ci` is unreliable here because npm resolves `ci`
 as a package name; call the local binary instead. Two frontend packages are held exactly, not by
 caret: TypeScript at 6.x and `vue-tsc` at 3.3.13. TypeScript 7 removes the `./lib/tsc` export that

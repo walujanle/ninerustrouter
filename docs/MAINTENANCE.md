@@ -76,9 +76,18 @@ deliberate: this repo builds the same way in three years as it does today. The
 cost is that a *dependency* only moves when someone bumps it, so run the
 routine at the top of this page a few times a year and read the gate output.
 
-The MSRV floor (`rust-version` in `Cargo.toml`, 1.88) is exercised by its own CI
-job. If a dependency bump raises the real MSRV above that floor, that job fails
-and tells you: either bump the floor or hold the dependency.
+The MSRV floor (`rust-version` in `Cargo.toml`, currently 1.89) is exercised by
+its own CI job, which is the only thing that checks the declared floor rather
+than the pinned 1.97.1 toolchain. If a dependency bump raises the real MSRV
+above that floor, the job fails and names the crate and its required version:
+either widen the floor or hold the dependency back, and do not leave the
+manifest claiming a floor the tree cannot build on.
+
+That is not hypothetical. `rusqlite` moving 0.40 to 0.41 raised the floor from
+1.88 to 1.89 on its own (0.41 declares `rust-version = "1.89.0"`), and the job
+caught it as a red build. The floor moved with it, because 1.89 is the last
+release from before this project's own history and holding a core data-layer
+dependency for one patch release costs more than the floor does.
 
 ### 4. TypeScript 7, and the `vue-tsc` pin
 

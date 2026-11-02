@@ -107,7 +107,7 @@ cd web && ./node_modules/.bin/biome ci
 cd web && npm audit
 ```
 
-Toolchain floor is Rust 1.88 (`edition = "2024"`). Two frontend packages are
+Toolchain floor is Rust 1.89 (`edition = "2024"`). Two frontend packages are
 held deliberately: TypeScript at 6.x, and `vue-tsc` at 3.3.13. TypeScript 7
 removes the `./lib/tsc` export `vue-tsc` 3.3 needs, and `vue-tsc` 3.3.14
 mis-binds `a.b` after an identifier inside a template interpolation
