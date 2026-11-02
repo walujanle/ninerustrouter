@@ -5,6 +5,16 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- The native Termux Android build compiles its bundled C. It used plain `clang`,
+  so the `cc` crate passed `--target=aarch64-linux-android` with no API level,
+  and Termux's `ndk-sysroot` `<sys/cdefs.h>` rejects an unversioned triple
+  outright (`#error Unversioned target triples are not supported!`). Every C
+  probe and the `jitterentropy` sources inside `aws-lc-sys` failed on it. The
+  compiler is now `aarch64-linux-android-clang` from the same `clang` package, a
+  wrapper that injects the versioned triple.
+
 ## [0.1.3] - 2026-11-03
 
 ### Fixed

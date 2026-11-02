@@ -215,7 +215,26 @@ if is_termux; then
 	# The host is already aarch64 bionic, so clang from Termux's toolchain is
 	# the right compiler; ndk-sysroot supplies the headers and stub libs.
 	need clang "pkg install clang"
-	CC_BIN="${CC:-clang}"
+	# cc-rs (aws-lc-sys, libsqlite3-sys, zstd-sys) passes a bare
+	# `--target=aarch64-linux-android`, with no API level, and Termux's patched
+	# ndk-sysroot <sys/cdefs.h> hard-errors on a triple that carries none:
+	#   #if !defined(__ANDROID_MIN_SDK_VERSION__)
+	#   #error Unversioned target triples are not supported!
+	# clang defines that macro only for a versioned triple, so bare `clang`
+	# never gets past the first probe. The same `clang` package ships
+	# `aarch64-linux-android-clang`: a wrapper that injects
+	# `--target=aarch64-linux-android$API`. Pointing CC at it is the whole fix
+	# - cc-rs sees "android" in the program name and skips adding its own
+	# --target, so the versioned one survives. The NDK branch below gets the
+	# same for free from its `aarch64-linux-android24-clang` name.
+	TERMUX_CC_WRAPPER="${PREFIX:-/data/data/com.termux/files/usr}/bin/$TARGET_TRIPLE-clang"
+	CC_BIN="${CC:-$TERMUX_CC_WRAPPER}"
+	# `CC` may be a path or a bare name; the wrapper is always a path.
+	if [ ! -x "$CC_BIN" ] && ! command -v "$CC_BIN" >/dev/null 2>&1; then
+		echo "[ERROR] compiler not found: $CC_BIN"
+		echo "        pkg install clang"
+		exit 1
+	fi
 	AR_BIN="${AR:-llvm-ar}"
 	if ! command -v "$AR_BIN" >/dev/null 2>&1; then
 		AR_BIN="$(command -v ar || true)"
