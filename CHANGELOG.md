@@ -5,6 +5,8 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-11-03
+
 ### Fixed
 
 - The native Termux Android build compiles its bundled C. It used plain `clang`,
