@@ -5,6 +5,14 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- `build-android.sh` no longer aborts before building. It exported
+  `CC_aarch64-linux-android`, which is not a legal shell identifier, so the
+  export failed and `set -e` stopped the script at that line. The per-target
+  compiler variables are now spelled with underscores, the form `cc-rs` also
+  accepts.
+
 ## [0.1.2] - 2026-11-02
 
 ### Changed

@@ -42,6 +42,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WEB="$ROOT/web"
 OUT="$ROOT/ninerustrouter-binary"
 TARGET_TRIPLE="aarch64-linux-android"
+# cc-rs' per-target environment names accept only [A-Za-z0-9_], so the triple's
+# hyphens become underscores. Keep the two spellings in step.
+TARGET_ENV_SUFFIX="${TARGET_TRIPLE//-/_}"
 
 PER_JOB_MB="${NINERUSTROUTER_MEM_PER_JOB_MB:-1800}"
 RESERVE_MB="${NINERUSTROUTER_MEM_RESERVE_MB:-1024}"
@@ -148,6 +151,16 @@ if [ "${1:-}" = "--self-test" ]; then
 	check "negative" 1 "$(compute_jobs 512 8 1800 1024)"
 	# A phone with 6 GB total, ~2.5 GB free, 8 cores -> 1 job.
 	check "phone" 1 "$(compute_jobs 2560 8 1800 1024)"
+	# The per-target env names must be settable. A hyphen is not a legal shell
+	# identifier, so `export "CC_$TARGET_TRIPLE=..."` aborts the whole script
+	# under `set -e`; the suffix has to be all underscores.
+	for name in "CC_${TARGET_ENV_SUFFIX}" "AR_${TARGET_ENV_SUFFIX}"; do
+		if ! (export "$name=x") 2>/dev/null; then
+			echo "FAIL: $name is not a valid environment identifier"
+			fail=1
+		fi
+	done
+	check "target suffix" "aarch64_linux_android" "$TARGET_ENV_SUFFIX"
 	if [ "$fail" -ne 0 ]; then
 		echo "self-test failed"
 		exit 1
@@ -207,6 +220,11 @@ if is_termux; then
 	if ! command -v "$AR_BIN" >/dev/null 2>&1; then
 		AR_BIN="$(command -v ar || true)"
 	fi
+	[ -n "$AR_BIN" ] || {
+		echo "[ERROR] no archiver found."
+		echo "        pkg install binutils"
+		exit 1
+	}
 	if [ ! -d "${PREFIX:-}/include" ] && [ ! -d /data/data/com.termux/files/usr/include ]; then
 		echo " warning:  ndk-sysroot headers not found; if the C build fails, run:"
 		echo "             pkg install ndk-sysroot binutils"
@@ -271,10 +289,15 @@ echo
 export CARGO_BUILD_JOBS="$PLANNED_JOBS"
 export MAKEFLAGS="-j${PLANNED_JOBS}"
 
-# The C deps compile through `cc`, which reads the per-target CC/AR. Set both
-# the prefixed and the target-triple env so every crate picks them up.
-export "CC_${TARGET_TRIPLE}=$CC_BIN"
-export "AR_${TARGET_TRIPLE}=$AR_BIN"
+# The C deps compile through `cc`, which looks for the per-target names in
+# this order: CC_<triple>, CC_<triple with - and . as _>, then HOST_CC/CC.
+# Only the underscored spelling is reachable from a shell - a hyphen is not a
+# valid identifier, so `export "CC_aarch64-linux-android=clang"` fails with
+# "not a valid identifier" and `set -e` stops the script - and cc-rs tries the
+# underscored form second, so setting it is enough. The unprefixed CC/AR cover
+# the crates that read those directly.
+export "CC_${TARGET_ENV_SUFFIX}=$CC_BIN"
+export "AR_${TARGET_ENV_SUFFIX}=$AR_BIN"
 export CC="$CC_BIN"
 export AR="$AR_BIN"
 export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$CC_BIN"
