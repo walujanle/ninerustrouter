@@ -5,6 +5,8 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-11-03
+
 ### Fixed
 
 - `build-android.sh` no longer aborts before building. It exported
