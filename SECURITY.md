@@ -289,6 +289,6 @@ a response to a request or a chat the operator started.
 
 ## Verifying a release
 
-`cargo audit` and `npm audit --audit-level=high` run in CI. Each release zip ships
-a `.zip.sha256` sidecar next to it; verify the downloaded zip against that before
-unpacking it.
+`cargo audit` and `npm audit --audit-level=high` run in CI. Each release archive
+ships a `.sha256` sidecar next to it; verify the downloaded archive against that
+before unpacking it.

@@ -16,24 +16,27 @@ side.
 
 ## Install
 
-Download the zip for your platform from the
+Download the archive for your platform from the
 [latest release](https://github.com/walujanle/ninerustrouter/releases/latest),
-unpack it, and put the executable on your `PATH`. The zip is named
-`ninerustrouter-{os}-{arch}-{version}.zip`; the executable inside is always
-plain `ninerustrouter` (or `ninerustrouter.exe`). There is no npm package and no
-runtime dependency on Node.
+unpack it, and put the executable on your `PATH`. Linux, macOS and Android ship
+`ninerustrouter-{os}-{arch}-{version}.tar.gz`; Windows ships `.zip`. The
+executable inside is always plain `ninerustrouter` (or `ninerustrouter.exe`).
+There is no npm package and no runtime dependency on Node.
 
 ```bash
 # linux x86_64; pick the asset matching your OS/arch and set VERSION to it
-VERSION=0.1.0
-curl -fLO "https://github.com/walujanle/ninerustrouter/releases/download/v$VERSION/ninerustrouter-linux-amd64-$VERSION.zip"
-unzip "ninerustrouter-linux-amd64-$VERSION.zip"        # -> ./ninerustrouter
+VERSION=0.1.2
+curl -fLO "https://github.com/walujanle/ninerustrouter/releases/download/v$VERSION/ninerustrouter-linux-amd64-$VERSION.tar.gz"
+tar -xzf "ninerustrouter-linux-amd64-$VERSION.tar.gz"  # -> ./ninerustrouter
 install -m 755 ninerustrouter ~/.local/bin/ninerustrouter
 ```
 
-Each zip ships a `.zip.sha256` sidecar. On Termux, take the
-`ninerustrouter-linux-android-aarch64-*` zip — the glibc Linux build cannot load
-under Bionic.
+The tarball keeps the executable bit, so the unpacked file already runs. On
+Windows, unzip `ninerustrouter-windows-x64-$VERSION.zip` instead.
+
+Each archive ships a `.sha256` sidecar. On Termux, take the
+`ninerustrouter-linux-android-aarch64-*` tarball — the glibc Linux build cannot
+load under Bionic.
 
 Or build from source:
 
@@ -43,7 +46,8 @@ cargo build --release      # embeds web/dist into the binary
 ```
 
 Both scripts write `ninerustrouter-binary/`. Pass `--release-name` to `build.sh`
-to also emit the same versioned zip CI publishes.
+to also emit the same versioned tarball CI publishes; on Windows `build.bat`
+emits the zip.
 
 ## Run
 

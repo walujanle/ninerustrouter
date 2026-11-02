@@ -1,8 +1,13 @@
 # Releasing NineRustRouter
 
-One tag on the default branch (`main`) builds six platform zips and attaches
+One tag on the default branch (`main`) builds six platform archives and attaches
 them to a GitHub Release with notes pulled from `CHANGELOG.md`. The workflow is
 `.github/workflows/release.yml`. A release publishes no package to any registry.
+
+Linux, macOS and Android legs ship `.tar.gz`; the two Windows legs ship `.zip`,
+because that is what Explorer opens without extra tooling. A tarball is the
+better shape everywhere else: it carries the executable bit, so the unpacked
+file runs without a `chmod +x` first.
 
 ## Version: one source of truth
 
@@ -75,16 +80,16 @@ fails a check.
 
 ## What the workflow produces
 
-Each leg builds one zip holding the bare executable. The executable inside is
+Each leg builds one archive holding the bare executable. The executable inside is
 always plain `ninerustrouter` (or `ninerustrouter.exe`) — the version lives in
-the zip's name, never in the file you run.
+the archive's name, never in the file you run.
 
-| Asset (zip) | Contains | Runner | Target |
+| Asset | Contains | Runner | Target |
 |---|---|---|---|
-| `ninerustrouter-linux-amd64-x.y.z.zip` | `ninerustrouter` | `ubuntu-24.04` | `x86_64-unknown-linux-gnu` |
-| `ninerustrouter-linux-arm64-x.y.z.zip` | `ninerustrouter` | `ubuntu-24.04-arm` | `aarch64-unknown-linux-gnu` |
-| `ninerustrouter-linux-android-aarch64-x.y.z.zip` | `ninerustrouter` | `ubuntu-24.04` (own job) | `aarch64-linux-android` |
-| `ninerustrouter-macos-arm64-x.y.z.zip` | `ninerustrouter` | `macos-latest` | `aarch64-apple-darwin` |
+| `ninerustrouter-linux-amd64-x.y.z.tar.gz` | `ninerustrouter` | `ubuntu-24.04` | `x86_64-unknown-linux-gnu` |
+| `ninerustrouter-linux-arm64-x.y.z.tar.gz` | `ninerustrouter` | `ubuntu-24.04-arm` | `aarch64-unknown-linux-gnu` |
+| `ninerustrouter-linux-android-aarch64-x.y.z.tar.gz` | `ninerustrouter` | `ubuntu-24.04` (own job) | `aarch64-linux-android` |
+| `ninerustrouter-macos-arm64-x.y.z.tar.gz` | `ninerustrouter` | `macos-latest` | `aarch64-apple-darwin` |
 | `ninerustrouter-windows-x64-x.y.z.zip` | `ninerustrouter.exe` | `windows-latest` | `x86_64-pc-windows-msvc` |
 | `ninerustrouter-windows-arm64-x.y.z.zip` | `ninerustrouter.exe` | `windows-11-arm` | `aarch64-pc-windows-msvc` |
 
@@ -101,29 +106,31 @@ Android SDK at all. The x64 image presets `ANDROID_NDK_HOME` to NDK 27.3, so the
 cross-compile to `arm64-v8a` runs there.
 
 Each leg downloads the frontend `web/dist` artifact — `router-server` embeds it
-with `rust-embed`, so the frontend is built once and shared. The Linux and macOS
-legs zip with the `zip` CLI; the Windows legs use `Compress-Archive`, since no
-`zip` is shipped. Each zip is uploaded with a `<asset>.zip.sha256` sidecar
-carrying its hex SHA-256.
+with `rust-embed`, so the frontend is built once and shared. The Linux, macOS and
+Android legs tar with the `tar` CLI — universally present, and the one archiver
+that records the executable bit — and the Windows legs use `Compress-Archive`,
+since there is nothing to preserve there and Explorer opens a zip natively. Each
+archive is uploaded with a `<asset>.sha256` sidecar carrying its hex SHA-256.
 
-The zip is what gets hashed, not the binary inside it: the update check compares
-the release tag against the running version and nothing else, so there is no
-executable digest to publish.
+The archive is what gets hashed, not the binary inside it: the update check
+compares the release tag against the running version and nothing else, so there
+is no executable digest to publish.
 
 ## Install channels
 
 One, and it does not go through a package registry:
 
-- **GitHub Release zip.** Download, unpack, put the executable on `PATH`. This is
-  the only install path, and it is what the in-app update prompt points at.
+- **GitHub Release archive.** Download, unpack, put the executable on `PATH`.
+  This is the only install path, and it is what the in-app update prompt points
+  at.
 
 There is no container image and no npm package. Releases up to 0.3.x published
 `ninerustrouter` and five platform packages to npmjs.com; 0.3.2 is the last one.
-Termux takes the `ninerustrouter-linux-android-aarch64-*` zip directly.
+Termux takes the `ninerustrouter-linux-android-aarch64-*` tarball directly.
 
 Building from source is the only other route: `./build.sh` (Linux/macOS) or
 `build.bat` (Windows), each of which writes `ninerustrouter-binary/` and, with
-`--release-name`, the same versioned zip CI publishes.
+`--release-name`, the same versioned archive CI publishes.
 
 ## Removed: npm publishing
 
@@ -146,10 +153,13 @@ done
 ## Verifying a release
 
 - `node scripts/extract-changelog.mjs x.y.z` prints the notes that will be used.
-- The Release should carry six zips, each with a `.zip.sha256` sidecar.
-- Unzip the asset for your platform; the archive holds a bare `ninerustrouter`
-  (or `ninerustrouter.exe`), and `ninerustrouter --version` prints the released
-  version. The binary runs with no Node installed.
+- The Release should carry six archives — four `.tar.gz` and two `.zip` — each
+  with a `.sha256` sidecar.
+- Unpack the archive for your platform; it holds a bare `ninerustrouter` (or
+  `ninerustrouter.exe`), and `ninerustrouter --version` prints the released
+  version. A Linux, macOS or Android tarball extracts already executable; a
+  Windows zip extracts `ninerustrouter.exe`. The binary runs with no Node
+  installed.
 - On Termux, the `ninerustrouter-linux-android-aarch64-*` asset runs under Bionic.
 - A running older binary reports `updateAvailable: true` on `/api/version` and
   shows the sidebar banner within a couple of seconds of load.

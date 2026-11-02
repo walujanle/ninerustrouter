@@ -24,12 +24,12 @@
 # The bundled C in aws-lc-sys, libsqlite3-sys and zstd-sys compiles one file at
 # a time (cc-rs has no `parallel` feature enabled), so it adds little.
 #
-# Output: ninerustrouter-binary/ninerustrouter-linux-android-aarch64[-<version>]
+# Output: ninerustrouter-binary/ninerustrouter-linux-android-aarch64
 #
 #   ./build-android.sh                 auto-size jobs to available RAM
 #   ./build-android.sh --low-mem       force the low-memory profile and -j1
 #   ./build-android.sh --jobs 2        cap parallelism explicitly
-#   ./build-android.sh --release-name  also emit the CI asset name with version
+#   ./build-android.sh --release-name  also emit the CI asset tarball with version
 #   ./build-android.sh --no-frontend   reuse an existing web/dist (backend only)
 #   ./build-android.sh --self-test     run the sizing self-check and exit
 #
@@ -338,9 +338,18 @@ chmod +x "$OUT/$ASSET"
 
 if [ "$RELEASE_NAME" -eq 1 ]; then
 	VERSION="$(tr -d '[:space:]' <"$ROOT/PROJECT_VERSION")"
+	# Same archive the CI job publishes, member for member: a tarball holding
+	# the bare executable, so unpacking yields `ninerustrouter` with no version
+	# in the name. Staged through a temp dir because the output directory keeps
+	# the versioned copy under its own name.
+	STAGE="$(mktemp -d)"
+	trap 'rm -rf "$STAGE"' EXIT
+	cp -f "$BIN" "$STAGE/ninerustrouter"
+	chmod +x "$STAGE/ninerustrouter"
+	rm -f "$OUT/${ASSET}-${VERSION}.tar.gz"
+	tar -czf "$OUT/${ASSET}-${VERSION}.tar.gz" -C "$STAGE" ninerustrouter
 	cp -f "$BIN" "$OUT/${ASSET}-${VERSION}"
-	chmod +x "$OUT/${ASSET}-${VERSION}"
-	echo "      asset: $OUT/${ASSET}-${VERSION}"
+	echo "      asset: $OUT/${ASSET}-${VERSION}.tar.gz"
 fi
 
 echo

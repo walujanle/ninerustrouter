@@ -43,7 +43,8 @@ cd web && npm audit
 ```
 
 The release build embeds `web/dist` into the binary. There is no Node at runtime. The only
-distribution channels are the GitHub Release zips and a manual compile; there is no container image.
+distribution channels are the GitHub Release archives and a manual compile; there is no container
+image.
 
 For a manual production build outside CI, use `./build.bat` (Windows) or
 `./build.sh` (Linux/macOS); both build the frontend first, then the backend, and

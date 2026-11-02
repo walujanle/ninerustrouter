@@ -211,7 +211,7 @@ route spawns nothing, so it is not a kill primitive. `POST /api/version/shutdown
 ### Update check (`services/update_check.rs`)
 
 The check polls the GitHub Releases of `walujanle/ninerustrouter` (`GET /releases/latest`) and
-compares the newest release tag to `APP_VERSION`. That is the only signal: the assets are zips, so the
+compares the newest release tag to `APP_VERSION`. That is the only signal: the assets are archives, so the
 running executable is never byte-comparable to a download and there is no second one to compute.
 
 `GET /api/version` reads the in-memory cache and never blocks on the network; it also kicks a

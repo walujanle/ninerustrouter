@@ -18,7 +18,7 @@
 | `CLI-TOOLS.md` | the Codex, Claude Code and Hermes config writers |
 | `RUNTIME.md` | schedulers, ephemeral state, startup order, outbound proxy, updater, launcher |
 | `TESTING.md` | fixtures, the database round trip, the test harness |
-| `RELEASING.md` | versioning, the release zips |
+| `RELEASING.md` | versioning, the release archives |
 
 ---
 
@@ -189,7 +189,7 @@ Detail in `docs/FRONTEND.md`. Summary:
 | R15 | **Ephemeral state with load-bearing semantics.** Combo rotation resets on restart, and losing it changes which account serves a request. | Keep the semantics; mark the rest explicitly "reset on restart, correct". |
 | R16 | **Files outside the database.** `jwt-secret`, `cli-secret`, machine ID, `model-catalog.json`, backups, updater status. Regenerating the secrets invalidates live API keys and CLI tokens. | Keep every path and format; see the table in `DB-PARITY.md`. |
 | R17 | **Startup ordering.** The DB has to be migrated before any scheduler starts, or the schedulers read connections the moment they come up. | Recreate the sequence explicitly in `main.rs`; DB adapter before schedulers. |
-| R18 | **Updater.** A static binary cannot replace itself. | The check runs against GitHub Releases and the banner opens the release page, where the versioned zip is downloaded and unpacked by hand. See `RUNTIME.md`. |
+| R18 | **Updater.** A static binary cannot replace itself. | The check runs against GitHub Releases and the banner opens the release page, where the versioned archive is downloaded and unpacked by hand. See `RUNTIME.md`. |
 
 ---
 

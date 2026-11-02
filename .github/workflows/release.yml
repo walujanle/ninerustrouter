@@ -149,9 +149,13 @@ jobs:
         shell: bash
         run: cargo build --release --locked --target ${{ matrix.target }} -p ninerustrouter
 
-      # The asset is a zip holding the bare executable, so unpacking it yields
+      # The asset holds the bare executable, so unpacking it yields
       # `ninerustrouter` (or `ninerustrouter.exe`) with no version in the name.
-      # The `.zip` is what gets hashed: that is the artifact a user downloads.
+      # The archive is what gets hashed: that is the artifact a user downloads.
+      #
+      # Windows ships a zip because Explorer opens it with no extra tooling;
+      # every other leg ships a tar.gz, which carries the executable bit and so
+      # unpacks to a runnable file instead of one that needs a `chmod +x` first.
       - name: Package asset
         shell: bash
         run: |
@@ -164,14 +168,16 @@ jobs:
             powershell -NoProfile -Command \
               "Compress-Archive -Path 'dist/ninerustrouter.exe' -DestinationPath 'dist/${asset}.zip' -Force"
             rm -f dist/ninerustrouter.exe
+            file="dist/${asset}.zip"
           else
             cp "$bin" dist/ninerustrouter
-            ( cd dist && zip -q "${asset}.zip" ninerustrouter && rm ninerustrouter )
+            ( cd dist && tar -czf "${asset}.tar.gz" ninerustrouter && rm ninerustrouter )
+            file="dist/${asset}.tar.gz"
           fi
           if command -v sha256sum >/dev/null; then
-            sha256sum "dist/${asset}.zip" | cut -d' ' -f1 > "dist/${asset}.zip.sha256"
+            sha256sum "$file" | cut -d' ' -f1 > "${file}.sha256"
           else
-            shasum -a 256 "dist/${asset}.zip" | cut -d' ' -f1 > "dist/${asset}.zip.sha256"
+            shasum -a 256 "$file" | cut -d' ' -f1 > "${file}.sha256"
           fi
       - uses: actions/upload-artifact@v4
         with:
@@ -212,8 +218,8 @@ jobs:
           asset="ninerustrouter-linux-android-aarch64-${version}"
           mkdir -p dist
           cp target/aarch64-linux-android/release/ninerustrouter dist/ninerustrouter
-          ( cd dist && zip -q "${asset}.zip" ninerustrouter && rm ninerustrouter )
-          sha256sum "dist/${asset}.zip" | cut -d' ' -f1 > "dist/${asset}.zip.sha256"
+          ( cd dist && tar -czf "${asset}.tar.gz" ninerustrouter && rm ninerustrouter )
+          sha256sum "dist/${asset}.tar.gz" | cut -d' ' -f1 > "dist/${asset}.tar.gz.sha256"
       - uses: actions/upload-artifact@v4
         with:
           name: binary-linux-android-aarch64

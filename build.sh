@@ -20,7 +20,7 @@
 #   ./build.sh                     auto-size jobs to available RAM
 #   ./build.sh --low-mem           force the low-memory profile and -j1
 #   ./build.sh --jobs 2            cap parallelism explicitly
-#   ./build.sh --release-name      also emit the CI asset zip (ninerustrouter-linux-amd64-0.1.0.zip)
+#   ./build.sh --release-name      also emit the CI asset tarball (ninerustrouter-linux-amd64-0.1.2.tar.gz)
 #   ./build.sh --no-frontend       reuse an existing web/dist (backend only)
 #   ./build.sh --self-test         run the job-sizing self-check and exit
 #
@@ -291,12 +291,22 @@ chmod +x "$OUT/ninerustrouter"
 
 if [ "$RELEASE_NAME" -eq 1 ]; then
 	VERSION="$(tr -d '[:space:]' <"$ROOT/PROJECT_VERSION")"
-	ASSET="$(platform_slug)-${VERSION}.zip"
-	need zip "Install zip (the release asset is a zip)."
+	SLUG="$(platform_slug)"
+	# The Windows asset is a zip (build.bat makes it); every other platform
+	# gets a tarball, which keeps the executable bit so the unpacked file runs
+	# without a `chmod +x` first.
+	case "$SLUG" in
+	ninerustrouter-windows-*)
+		echo "[ERROR] the Windows asset is a zip: run build.bat instead."
+		exit 1
+		;;
+	esac
+	ASSET="${SLUG}-${VERSION}.tar.gz"
+	need tar "Install tar (the release asset is a tarball)."
 	# The archive holds the bare executable, so unpacking it yields
 	# `ninerustrouter` with no version in the name.
 	rm -f "$OUT/$ASSET"
-	( cd "$OUT" && zip -q "$ASSET" ninerustrouter )
+	( cd "$OUT" && tar -czf "$ASSET" ninerustrouter )
 	echo "      asset: $OUT/$ASSET"
 fi
 

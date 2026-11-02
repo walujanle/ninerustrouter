@@ -5,6 +5,14 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-02
+
+### Changed
+
+- Linux, macOS and Android releases are published as `.tar.gz` instead of
+  `.zip`. The tarball keeps the executable bit, so the unpacked binary runs
+  without a `chmod +x` first. Windows still ships `.zip`.
+
 ## [0.1.1] - 2026-11-02
 
 ### Added
