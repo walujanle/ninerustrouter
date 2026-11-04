@@ -194,6 +194,7 @@ fn resolve_max_results(body: &Value, config: &Value) -> i64 {
 }
 
 /// The `{url, method, headers, json_body}` a builder produces.
+#[derive(Debug)]
 struct BuiltRequest {
     url: String,
     method: &'static str,
@@ -416,6 +417,66 @@ fn build_request(
                 json_body: None,
             })
         }
+        "tinyfish" => {
+            let Some(token) = token else {
+                return Err(ModalityError::search(
+                    400,
+                    "TinyFish Search requires an API key",
+                ));
+            };
+            if !["web", "news", "research_paper"].contains(&search_type) {
+                return Err(ModalityError::search(
+                    400,
+                    "Unsupported TinyFish search type",
+                ));
+            }
+            let (includes, excludes) = parse_domain_filter(domain_filter);
+            let mut qp = url::form_urlencoded::Serializer::new(String::new());
+            qp.append_pair("query", query);
+            if search_type != "web" {
+                qp.append_pair("domain_type", search_type);
+            }
+            if let Some(country) = country {
+                qp.append_pair("location", country);
+            }
+            if let Some(language) = language {
+                qp.append_pair("language", language);
+            }
+            if !includes.is_empty() {
+                qp.append_pair("include_domains", &includes.join(","));
+            }
+            if !excludes.is_empty() {
+                qp.append_pair("exclude_domains", &excludes.join(","));
+            }
+            // Fixed 10-result pages; `offset` has to fit inside one page, since
+            // the page index is all the upstream accepts.
+            if let Some(offset) = offset.filter(|o| *o > 0.0) {
+                if offset >= 110.0 {
+                    return Err(ModalityError::search(
+                        400,
+                        "TinyFish search offset exceeds available pages",
+                    ));
+                }
+                if offset as i64 % 10 + max_results > 10 {
+                    return Err(ModalityError::search(
+                        400,
+                        "TinyFish search offset and max_results must fit within one page",
+                    ));
+                }
+                qp.append_pair("page", &((offset / 10.0).floor() as i64).to_string());
+            }
+            Ok(BuiltRequest {
+                // Pinned to the configured host: a client `baseUrl` override
+                // must never receive the API key.
+                url: format!("{base}?{}", qp.finish()),
+                method: "GET",
+                headers: vec![
+                    ("Accept".into(), "application/json".into()),
+                    ("X-API-Key".into(), token.to_string()),
+                ],
+                json_body: None,
+            })
+        }
         _ => Err(ModalityError::search(
             400,
             format!("Unsupported search provider: {provider_id}"),
@@ -525,9 +586,22 @@ async fn try_dedicated_provider(
         });
     let normalized = normalize_search_response(provider_id, &data, query, search_type);
     let max_results = resolve_max_results(body, config);
+    // TinyFish pages are a fixed 10 results, so an `offset` inside the page is
+    // applied locally after the fetch; every other provider's offset is sent
+    // upstream in the request itself.
+    let page_offset = if provider_id == "tinyfish" {
+        body.get("offset")
+            .and_then(Value::as_i64)
+            .filter(|o| *o > 0)
+            .map(|o| (o % 10) as usize)
+            .unwrap_or(0)
+    } else {
+        0
+    };
     let results: Vec<Value> = normalized
         .results
         .iter()
+        .skip(page_offset)
         .take(max_results.max(0) as usize)
         .cloned()
         .collect();
@@ -779,6 +853,39 @@ fn normalize_search_response(
                 total_results: total,
             }
         }
+        "tinyfish" => {
+            let items = data
+                .get("results")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let results = items
+                .iter()
+                .enumerate()
+                .map(|(idx, item)| {
+                    make_result(
+                        "tinyfish",
+                        &json!({
+                            "title": item.get("title"),
+                            "url": item.get("url"),
+                            "snippet": item.get("snippet"),
+                            "published_at": item.get("date"),
+                            "source_type": item.get("publisher"),
+                            "author": item
+                                .get("authors")
+                                .and_then(Value::as_array)
+                                .map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")),
+                        }),
+                        idx,
+                        &now,
+                    )
+                })
+                .collect::<Vec<_>>();
+            NormalizedSearch {
+                results,
+                total_results: data.get("total_results").cloned().unwrap_or(Value::Null),
+            }
+        }
         _ => empty(),
     }
 }
@@ -996,6 +1103,85 @@ mod tests {
         assert_eq!(out.results[0]["snippet"], json!("first"));
         assert_eq!(out.results[0]["content"]["format"], json!("markdown"));
         assert_eq!(out.results[0]["metadata"]["image_url"], json!("img"));
+    }
+
+    #[test]
+    fn tinyfish_normalizer_maps_its_flat_result_list() {
+        let data = json!({
+            "results": [{
+                "title": "T", "url": "https://t.ai", "snippet": "snip",
+                "date": "2026-01-02", "publisher": "Blog",
+                "authors": ["Ada", "Grace"]
+            }],
+            "total_results": 42
+        });
+        let out = normalize_search_response("tinyfish", &data, "q", "web");
+        assert_eq!(out.results[0]["title"], json!("T"));
+        assert_eq!(out.results[0]["snippet"], json!("snip"));
+        assert_eq!(out.results[0]["published_at"], json!("2026-01-02"));
+        assert_eq!(out.results[0]["metadata"]["source_type"], json!("Blog"));
+        assert_eq!(out.results[0]["metadata"]["author"], json!("Ada, Grace"));
+        assert_eq!(out.total_results, json!(42));
+    }
+
+    #[test]
+    fn tinyfish_builder_rejects_a_search_type_outside_its_list() {
+        let config = json!({ "baseUrl": "https://api.search.tinyfish.ai", "searchTypes": ["web"] });
+        let credentials = Credentials {
+            api_key: Some("k".into()),
+            ..Default::default()
+        };
+        let err = build_request(
+            "tinyfish",
+            &config,
+            &json!({ "query": "q", "search_type": "images" }),
+            Some(&credentials),
+        )
+        .unwrap_err();
+        assert!(err.message.contains("Unsupported TinyFish search type"));
+
+        // `web` is the default type, so it sends no `domain_type`.
+        let req = build_request(
+            "tinyfish",
+            &config,
+            &json!({ "query": "q" }),
+            Some(&credentials),
+        )
+        .unwrap();
+        assert!(!req.url.contains("domain_type"));
+        assert_eq!(req.method, "GET");
+        assert!(
+            req.headers
+                .iter()
+                .any(|(k, v)| k == "X-API-Key" && v == "k")
+        );
+    }
+
+    #[test]
+    fn tinyfish_builder_pages_by_ten_and_refuses_a_split_page() {
+        let config = json!({ "baseUrl": "https://api.search.tinyfish.ai", "maxMaxResults": 10 });
+        let credentials = Credentials {
+            api_key: Some("k".into()),
+            ..Default::default()
+        };
+        let req = build_request(
+            "tinyfish",
+            &config,
+            &json!({ "query": "q", "offset": 25, "max_results": 5 }),
+            Some(&credentials),
+        )
+        .unwrap();
+        assert!(req.url.contains("page=2"), "{}", req.url);
+
+        // 25 % 10 = 5, plus 6 results overflows a single page.
+        let err = build_request(
+            "tinyfish",
+            &config,
+            &json!({ "query": "q", "offset": 25, "max_results": 6 }),
+            Some(&credentials),
+        )
+        .unwrap_err();
+        assert!(err.message.contains("within one page"));
     }
 
     #[test]

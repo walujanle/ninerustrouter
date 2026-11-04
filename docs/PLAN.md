@@ -36,7 +36,7 @@
 
 ninerustrouter listens on **20129**; `DEFAULT_MITM_ROUTER_BASE` in `router-db` stays `http://localhost:20128`. That value is a key inside the shared settings blob, so it is part of the parity contract rather than a live bind address: rewriting it to 20129 changes the bytes an existing 9router row reads.
 
-The size of the job, in this repo's own terms: four crates (~86,000 lines of Rust), a Vue 3 dashboard of 105 `.vue` files, a committed provider registry of 25 entries (19 with a transport) and 221 model rows, 11 database tables, and about 1,185 unit tests.
+The size of the job, in this repo's own terms: four crates (~86,000 lines of Rust), a Vue 3 dashboard of 106 `.vue` files, a committed provider registry of 25 entries (18 with a transport) and 219 model rows, 11 database tables, and about 1,200 unit tests.
 
 ---
 

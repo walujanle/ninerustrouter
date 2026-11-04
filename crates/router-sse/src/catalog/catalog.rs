@@ -219,7 +219,7 @@ static VISION_NAME: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// `COMMANDCODE_TEXT_ONLY`.
-const COMMANDCODE_TEXT_ONLY: [&str; 23] = [
+const COMMANDCODE_TEXT_ONLY: [&str; 22] = [
     "deepseek/deepseek-v4-pro",
     "deepseek/deepseek-v4-flash",
     "deepseek/deepseek-v4-flash-fast",
@@ -240,7 +240,6 @@ const COMMANDCODE_TEXT_ONLY: [&str; 23] = [
     "tencent/hy3",
     "tencent/hy3-paid",
     "nvidia/nemotron-3-ultra-550b-a55b",
-    "poolside/laguna-s-2.1-free",
     "inclusionai/ling-3.0-flash-free",
     "inclusionai/ling-3.0-flash-sante:free",
 ];
@@ -1018,6 +1017,9 @@ mod tests {
         // provider-keyed tables against the kept id set.
         assert!(!CATALOG.provider_capabilities.contains_key("qoder-cn"));
         assert!(!CATALOG.provider_capabilities.contains_key("commandcode"));
+        // `poolside` left with the provider; its resold models under `nous`
+        // are still priced and capped by the shared `*laguna*` patterns.
+        assert!(!CATALOG.provider_capabilities.contains_key("poolside"));
     }
 
     #[test]

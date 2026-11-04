@@ -87,6 +87,7 @@ pub async fn fetch_core(
         "firecrawl" => run_firecrawl(&ctx, proxy_options).await,
         "tavily" => run_tavily(&ctx, proxy_options).await,
         "exa" => run_exa(&ctx, proxy_options).await,
+        "tinyfish" => run_tinyfish(&ctx, proxy_options).await,
         _ => Err(ModalityError::openai(
             400,
             format!("Unsupported provider: {provider_id}"),
@@ -273,6 +274,77 @@ async fn run_exa(
     )))
 }
 
+/// `runTinyfish`: POST `{urls: [url], format}` and read `results[0]`.
+///
+/// An upstream failure can arrive as HTTP 200 with a populated `errors[]`, so
+/// that array is checked before the payload is read.
+async fn run_tinyfish(
+    ctx: &RunCtx<'_>,
+    proxy_options: &ProxyOptions,
+) -> Result<ModalityResponse, ModalityError> {
+    if !["markdown", "html"].contains(&ctx.format) {
+        return Err(ModalityError::openai(
+            400,
+            format!("Unsupported TinyFish format: {}", ctx.format),
+        ));
+    }
+    let body = json!({ "urls": [ctx.url], "format": ctx.format });
+    let auth = [("X-API-Key", ctx.api_key.to_string())];
+    let (json, _, upstream_ms) = try_fetch(
+        ctx,
+        "TinyFish",
+        "https://api.fetch.tinyfish.ai",
+        &auth,
+        &body,
+        proxy_options,
+    )
+    .await?;
+
+    let failure = json.pointer("/errors/0");
+    if let Some(failure) = failure {
+        let status = failure.get("status").and_then(Value::as_u64).unwrap_or(502) as u16;
+        return Err(ModalityError::openai(
+            status,
+            format!(
+                "TinyFish fetch failed: {}",
+                failure
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown error")
+            ),
+        ));
+    }
+
+    let page = json.pointer("/results/0").cloned().unwrap_or(Value::Null);
+    let Some(raw_text) = page.get("text").and_then(Value::as_str) else {
+        return Err(ModalityError::openai(
+            502,
+            "TinyFish returned no extractable content",
+        ));
+    };
+    let text = truncate(raw_text, ctx.max_characters);
+    let links = page.get("links").and_then(Value::as_array).cloned();
+    let mut data = build_data(
+        "tinyfish",
+        ctx,
+        page.get("title").cloned().unwrap_or(Value::Null),
+        text,
+        links,
+        upstream_ms,
+    );
+    if let Some(obj) = data.as_object_mut() {
+        obj.insert(
+            "metadata".into(),
+            json!({
+                "author": page.get("author").cloned().unwrap_or(Value::Null),
+                "published_at": page.get("published_date").cloned().unwrap_or(Value::Null),
+                "language": page.get("language").cloned().unwrap_or(Value::Null),
+            }),
+        );
+    }
+    Ok(ModalityResponse::json(data))
+}
+
 /// The first non-empty string among `keys` — JS `a || b || c` over strings.
 fn str_or<'a>(item: &'a Value, keys: &[&str]) -> Option<&'a str> {
     keys.iter().find_map(|k| {
@@ -351,6 +423,10 @@ mod tests {
         }
     }
 
+    fn ctx_for(format: &'static str) -> RunCtx<'static> {
+        RunCtx { format, ..ctx() }
+    }
+
     #[test]
     fn build_data_has_the_envelope_shape() {
         let data = build_data("firecrawl", &ctx(), json!("Title"), "body".into(), None, 12);
@@ -383,6 +459,17 @@ mod tests {
         assert_eq!(truncate("abcdef", Some(0)), "abcdef");
         assert_eq!(truncate("abcdef", Some(3)), "abc");
         assert_eq!(truncate("abcdef", Some(-1)), "abcdef");
+    }
+
+    #[test]
+    fn tinyfish_rejects_a_format_outside_its_pair() {
+        // The guard runs before any network call, so a plain `block_on` over a
+        // not-yet-constructed request still exercises it.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let err = rt
+            .block_on(run_tinyfish(&ctx_for("pdf"), &ProxyOptions::default()))
+            .unwrap_err();
+        assert!(err.message.contains("Unsupported TinyFish format"));
     }
 
     #[test]

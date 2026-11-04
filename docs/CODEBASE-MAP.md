@@ -134,6 +134,7 @@ and pricing. Both are edited directly — never duplicate the data in Rust.
 | `src/providers/lookup.rs` | Model-string parsing and per-model lookups (validity, target format, upstream id, thinking suffix). | `parse_model`, `is_valid_model`, `model_upstream_id`, `model_target_format`, `infer_provider_from_model_name` |
 | `src/providers/service.rs` | Per-request provider resolution: body-shape format detection, target format, transport matching. | `detect_format`, `get_target_format`, `resolve_transport`, `resolve_openai_compatible_api_type` |
 | `src/providers/normalize.rs` | Canonicalizes a user-typed provider id and provider-specific-data blob. | `normalize_provider_id`, `normalize_provider_specific_data` |
+| `src/providers/overrides.rs` | Validates and reads the per-provider user header overrides stored in `settings.providerOverrides`. | `normalize_override`, `provider_overrides`, `builtin_headers`, `BLOCKED_HEADERS` |
 | `src/providers/ui.rs` | JSON projection of the registry for the dashboard. | `build_provider_entry`, `provider_categories`, `providers_by_kind`, `media_provider_kinds`, `alias_maps` |
 | `src/providers/shared.rs` | Shared provider constants; Anthropic beta-flag selection/merge. | `select_anthropic_beta`, `merge_anthropic_beta`, `ANTHROPIC_API_VERSION` |
 | `src/providers/mod.rs` | Module wiring and public re-exports. | `lookup`, `model`, `normalize`, `registry`, `service`, `shared`, `ui` |
@@ -266,8 +267,8 @@ cores (embeddings, web-search, web-fetch, systemone) plus the SSRF guard they ro
 | `src/services/stats_emitter.rs` | Process-wide broadcast emitter for debounced stats Update/Pending SSE frames. | `emit_update`, `emit_pending`, `subscribe`, `StatsEvent` |
 | `src/modalities/mod.rs` | Modality core contract: response/error envelopes, the outbound helper, lock keys, header sanitizers. | `ModalityResponse`, `ModalityError`, `ModalityHttp`, `websearch_lock_key`, `sanitize_headers` |
 | `src/modalities/embeddings.rs` | Embeddings core for mistral/nvidia/openrouter through one registry `embeddingConfig` read. | `embeddings_core` |
-| `src/modalities/search.rs` | Web-search core for brave-search/exa/linkup/tavily/youcom with a single 15s global deadline. | `search_core`, `sanitize_query`, `GLOBAL_TIMEOUT_MS` |
-| `src/modalities/fetch.rs` | Web-fetch core for firecrawl/tavily/exa; the target URL is SSRF-validated by the app layer before dispatch. | `fetch_core`, `DEFAULT_TIMEOUT_MS`, `DEFAULT_FORMAT` |
+| `src/modalities/search.rs` | Web-search core for brave-search/exa/linkup/tavily/tinyfish/youcom with a single 15s global deadline. | `search_core`, `sanitize_query`, `GLOBAL_TIMEOUT_MS` |
+| `src/modalities/fetch.rs` | Web-fetch core for firecrawl/tavily/exa/tinyfish; the target URL is SSRF-validated by the app layer before dispatch. | `fetch_core`, `DEFAULT_TIMEOUT_MS`, `DEFAULT_FORMAT` |
 | `src/modalities/systemone.rs` | System One (Jev) decision-payload pass-through for opencode/openrouter. | `systemone_core` |
 | `src/modalities/ssrf.rs` | Three-layer SSRF guard: literal host/IP checks, DNS-resolved checks, manual redirect re-validation. | `assert_public_url`, `assert_public_url_resolved`, `fetch_public`, `is_blocked_host`, `is_blocked_ipv4_int`, `PublicResponse` |
 
@@ -359,7 +360,7 @@ only export handler functions (there is no per-file router/nest).
 | `src/routes/models_test.rs` | `POST /api/models/test` — probes one model by calling back into the server's own `/v1` pipeline over loopback. |
 | `src/routes/registry.rs` | `GET /api/registry` — the client-side constants contract (providers, models, capabilities, icons) served once at SPA boot. |
 | `src/routes/pricing.rs` | Pricing table read/patch/reset: merges built-in defaults with user overrides in the `pricing` kv scope. |
-| `src/routes/providers.rs` | The dashboard connection routes: list/create/get/update/delete, client, suggested-models, test, test-batch, test-models, validate, models. |
+| `src/routes/providers.rs` | The dashboard connection routes: list/create/get/update/delete, client, suggested-models, test, test-batch, test-models, validate, models, and the per-provider header `overrides` (GET/PUT). |
 | `src/routes/provider_nodes.rs` | Provider-node (self-hosted OpenAI/Anthropic-compatible or embedding endpoint) CRUD and validate; node id is the provider id. |
 | `src/routes/proxy_pools.rs` | Proxy-pool CRUD, test, and edge-deploy (vercel/cloudflare/deno) routes. |
 | `src/routes/oauth.rs` | OAuth action route for the kept providers plus codex bulk-import and token-import actions. |

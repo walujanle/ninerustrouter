@@ -146,8 +146,8 @@ pub fn normalize_free_models(payload: &Value) -> Vec<Value> {
 }
 
 /// The live list is emitted as `nous/<upstream id>` because `parse_model` splits
-/// at the first `/`: a bare `poolside/laguna-s-2.1:free` would resolve to the
-/// existing `poolside` provider instead of Nous.
+/// at the first `/`: a bare `moonshotai/kimi-k2:free` would resolve to the
+/// `moonshotai` provider instead of Nous.
 pub fn prefix_model_ids(models: Vec<Value>) -> Vec<Value> {
     models
         .into_iter()

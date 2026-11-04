@@ -46,16 +46,22 @@ Every modality handler runs `api_key_gate` (`crates/router-server/src/routes/v1.
 through the OpenAI-compatible path; the core reads `embeddingConfig` and returns `usage` so the
 billing hook fires. `input` must be a string or an array of strings.
 
-**Search.** Providers: **brave-search**, **exa**, **linkup**, **tavily**, **youcom**. Five
-builders and five normalizers are two `match` statements. `resolve_base_url` honours a
-client-supplied `baseUrl` override through the SSRF guard. The **15 s global deadline** is
+**Search.** Providers: **brave-search**, **exa**, **linkup**, **tavily**, **tinyfish**,
+**youcom**. Six builders and six normalizers are two `match` statements. `resolve_base_url`
+honours a client-supplied `baseUrl` override through the SSRF guard, except for TinyFish,
+whose request is pinned to the configured host so a caller-supplied override can never
+receive the API key. TinyFish pages by a fixed ten results and accepts only a page index, so
+an in-page `offset` is applied locally after the fetch (`results.skip(offset % 10)`); every
+other provider sends the offset in the request. The **15 s global deadline** is
 load-bearing: it spans the dedicated attempt, not each request. Failover follows
 `check_fallback_error`: a 4xx cools the account down and falls over only for `401/402/403/429`
 (and the message-matched quota rules); any other 4xx returns the upstream error for this request
 without a fallback. There is no chat-search lane: a provider without a `searchConfig` has no
 search support.
 
-**Fetch.** Providers: **exa**, **firecrawl**, **tavily**. One `match`. `sanitize_header_value`
+**Fetch.** Providers: **exa**, **firecrawl**, **tavily**, **tinyfish**. One `match`. TinyFish
+answers a partially failed batch as HTTP 200 with a populated `errors[]`, so that array is
+checked before `results[0]`. `sanitize_header_value`
 strips characters above U+00FF from header values before they go out, because a value built from
 user input can carry characters HTTP cannot encode.
 
