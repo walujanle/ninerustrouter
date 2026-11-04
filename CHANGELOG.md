@@ -5,6 +5,25 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-11-05
+
+### Added
+
+- TinyFish as a web-search and web-fetch provider (`/v1/search`, `/v1/web/fetch`).
+- Per-provider outbound header overrides. The registry headers each provider sends
+  are now editable from the provider page, with a "Restore defaults" action that
+  drops back to the built-in set.
+
+### Removed
+
+- The Poolside provider. Its free service has ended.
+
+### Fixed
+
+- Applying a proxy pool to an individual API key did nothing on a mouse click. The
+  pool menu is teleported to `body`, and the outside-click handler closed it on the
+  `mousedown` that preceded the option's `click`, so the selection was never sent.
+
 ## [0.1.4] - 2026-11-03
 
 ### Fixed
