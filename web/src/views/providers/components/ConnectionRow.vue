@@ -51,6 +51,9 @@ const proxyButtonRef = ref<HTMLElement | null>(null);
 const proxyDropdownPos = ref({ top: 0, left: 0 });
 const updatingProxy = ref(false);
 const proxyDropdownRef = ref<HTMLElement | null>(null);
+// The menu is teleported to `body`, so it is not a descendant of
+// `proxyDropdownRef`; the outside-click test has to know about it separately.
+const proxyMenuRef = ref<HTMLElement | null>(null);
 
 const proxyPoolMap = computed(
 	() => new Map((props.proxyPools || []).map((pool) => [pool.id, pool])),
@@ -206,9 +209,13 @@ const oneByOneLabel = computed(() => {
 });
 
 function handleProxyOutsideClick(e: MouseEvent) {
-	if (proxyDropdownRef.value && !proxyDropdownRef.value.contains(e.target as Node)) {
-		showProxyDropdown.value = false;
-	}
+	const target = e.target as Node;
+	if (proxyDropdownRef.value?.contains(target)) return;
+	// The menu lives under `body` via Teleport, so without this the first
+	// mousedown on a pool option closes the dropdown before `click` fires and
+	// the selection is never emitted.
+	if (proxyMenuRef.value?.contains(target)) return;
+	showProxyDropdown.value = false;
 }
 
 /**
@@ -324,7 +331,11 @@ async function handleSelectProxy(poolId: string) {
     <div class="flex w-full items-center justify-between gap-2 sm:w-auto sm:justify-end">
       <div class="grid flex-1 grid-cols-3 gap-1 sm:flex sm:flex-none">
         <!-- Proxy button with inline dropdown -->
-        <div v-if="(props.proxyPools || []).length > 0" ref="proxyDropdownRef" class="relative">
+        <div
+          v-if="(props.proxyPools || []).length > 0 || !!boundProxyPoolId"
+          ref="proxyDropdownRef"
+          class="relative"
+        >
           <button
             type="button"
             :class="`flex w-full flex-col items-center rounded px-2 py-1 transition-colors hover:bg-black/5 dark:hover:bg-white/5 ${hasAnyProxy ? 'text-primary' : 'text-text-muted hover:text-primary'}`"
@@ -338,6 +349,7 @@ async function handleSelectProxy(poolId: string) {
           <Teleport to="body">
             <div
               v-if="showProxyDropdown"
+              ref="proxyMenuRef"
               class="fixed z-[60] min-w-40 max-w-[78vw] rounded-lg border border-border bg-bg py-1 shadow-lg"
               :style="{
                 top: `${proxyDropdownPos.top}px`,
