@@ -358,3 +358,26 @@ workspace the gateway does not have) and `x-session-id`, which is read from the 
 carries none. `providers/shared.rs` holds the shared constants (`ANTHROPIC_API_VERSION`, the
 beta list and `select_anthropic_beta`); the per-transport header values are the registry's, and are
 written verbatim.
+
+### User header overrides
+
+Any of those headers can be replaced from the dashboard without a rebuild. The store is
+`settings.providerOverrides`, keyed by canonical provider id and holding `{ headers: {..} }` per
+provider — the same key 9router declares, so it is shared settings data and takes **no migration**
+(`docs/DB-PARITY.md`).
+
+Three pieces:
+
+- `providers/overrides.rs` validates a payload (`MAX_HEADERS`, the name/value rules, and the
+  `BLOCKED_HEADERS` set that refuses `authorization`, `cookie`, `content-type` and the other
+  request-structure names) and exposes `builtin_headers(id)` — the registry `transport.headers` the
+  UI diffs against and restores to.
+- `services/auth.rs` reads the provider's slice off the shared settings snapshot when it builds the
+  account's `Credentials.header_overrides`, so a failed settings read degrades to the built-in
+  headers rather than failing account selection.
+- `executors/executor.rs` calls `apply_header_overrides` **after** `build_headers`, so the override
+  wins over the registry values, the hook-generated ids and auth. Last-wins is only safe because the
+  blocked list keeps the override off the credential headers.
+
+`GET`/`PUT /api/providers/{id}/overrides` are the dashboard surface. An empty `headers` object
+deletes the provider's entry, which is what "restore defaults" sends.

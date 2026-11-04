@@ -228,6 +228,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/providers/{id}/models", get(providers::models))
         .route(
+            "/api/providers/{id}/overrides",
+            get(providers::get_overrides).put(providers::put_overrides),
+        )
+        .route(
             "/api/proxy-pools",
             get(proxy_pools::list).post(proxy_pools::create),
         )

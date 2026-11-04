@@ -47,6 +47,10 @@ pub struct Credentials {
     /// the chat pipeline so the executor can skip translation. It overrides the
     /// provider's default URL and headers.
     pub runtime_transport: Option<Transport>,
+    /// `settings.providerOverrides[id].headers`: user headers applied last, so
+    /// they win over the registry defaults, the hooks and auth. Empty when the
+    /// provider has no override or the settings cache had none at selection.
+    pub header_overrides: Map<String, Value>,
     /// Any other connection column, in insertion order.
     pub extra: Map<String, Value>,
 }

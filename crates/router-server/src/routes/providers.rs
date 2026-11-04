@@ -2929,6 +2929,93 @@ fn now_iso() -> String {
     to_iso(router_db::time::now_ms())
 }
 
+// ─── per-provider header overrides ────────────────────────────────────────
+
+/// The settings key the overrides live under.
+const PROVIDER_OVERRIDES_KEY: &str = "providerOverrides";
+
+/// `GET /api/providers/{id}/overrides`.
+///
+/// `{ headers, builtinHeaders }`: the user's override and the registry
+/// `transport.headers` the UI pre-fills from and restores to.
+pub async fn get_overrides(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let canonical = resolve_alias_owned(&id);
+    let result = state.read(router_db::repos::settings::get_settings).await;
+    let Ok(settings) = result else {
+        return ApiError::internal("Failed to get overrides").into_response();
+    };
+    let headers = router_sse::providers::overrides::provider_overrides(&settings, &canonical)
+        .cloned()
+        .map(Value::Object)
+        .unwrap_or_else(|| json!({}));
+    let builtin = Value::Object(router_sse::providers::overrides::builtin_headers(
+        &canonical,
+    ));
+    no_store(Json(json!({ "headers": headers, "builtinHeaders": builtin })).into_response())
+}
+
+/// `PUT /api/providers/{id}/overrides` — body `{ headers: {name: value} }`.
+///
+/// An empty payload deletes the provider's override, which is what the
+/// dashboard's "restore defaults" does.
+pub async fn put_overrides(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    body: Result<Json<Value>, JsonRejection>,
+) -> Response {
+    let Ok(Json(payload)) = body else {
+        return ApiError::bad_request("Invalid JSON body").into_response();
+    };
+    let canonical = resolve_alias_owned(&id);
+    let override_value = match router_sse::providers::overrides::normalize_override(&payload) {
+        Ok(value) => value,
+        Err(message) => return ApiError::bad_request(&message).into_response(),
+    };
+
+    let write_key = canonical.clone();
+    let updated = state
+        .write(move |tx| {
+            let settings = router_db::repos::settings::get_settings(tx)?;
+            let mut overrides = settings
+                .get(PROVIDER_OVERRIDES_KEY)
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            match &override_value {
+                Some(value) => overrides.insert(write_key.clone(), value.clone()),
+                None => overrides.shift_remove(&write_key),
+            };
+            router_db::repos::settings::update_settings(
+                tx,
+                json!({ PROVIDER_OVERRIDES_KEY: Value::Object(overrides) }),
+            )
+        })
+        .await;
+    let Ok(settings) = updated else {
+        return ApiError::internal("Failed to save overrides").into_response();
+    };
+
+    let headers = router_sse::providers::overrides::provider_overrides(&settings, &canonical)
+        .cloned()
+        .map(Value::Object)
+        .unwrap_or_else(|| json!({}));
+    no_store(Json(json!({ "headers": headers })).into_response())
+}
+
+/// `resolveProviderAlias` as an owned `String`.
+fn resolve_alias_owned(alias_or_id: &str) -> String {
+    registry().resolve_alias(alias_or_id).to_string()
+}
+
+/// Stamp `Cache-Control: no-store`, matching the other dashboard reads.
+fn no_store(mut response: Response) -> Response {
+    response.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    response
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

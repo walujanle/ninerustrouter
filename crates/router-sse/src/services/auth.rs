@@ -394,8 +394,33 @@ fn build_selected(db: &Db, connection: Value) -> SelectedAccount {
         .and_then(Value::as_str)
         .map(str::to_string);
 
+    // The user's header override for this provider, read off the shared
+    // settings snapshot. `None` from a failed read is the empty map, so a
+    // database problem degrades to the built-in headers rather than failing
+    // account selection.
+    let provider_id = connection
+        .get("provider")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let header_overrides = db
+        .with_conn(|conn| {
+            let snapshot = router_db::config_cache::snapshot(conn)?;
+            Ok(snapshot.settings.clone())
+        })
+        .ok()
+        .map(|settings| {
+            crate::providers::overrides::provider_overrides(&settings, &provider_id)
+                .cloned()
+                .unwrap_or_default()
+        })
+        .unwrap_or_default();
+
+    let mut credentials = credentials_from_connection(&enriched);
+    credentials.header_overrides = header_overrides;
+
     SelectedAccount {
-        credentials: credentials_from_connection(&enriched),
+        credentials,
         connection,
         connection_name: name,
         test_status,
@@ -440,6 +465,7 @@ pub fn credentials_from_connection(connection: &Value) -> Credentials {
         raw_headers: std::collections::HashMap::new(),
         client_session_id: None,
         runtime_transport: None,
+        header_overrides: Map::new(),
         extra: connection.as_object().cloned().unwrap_or_default(),
     }
 }

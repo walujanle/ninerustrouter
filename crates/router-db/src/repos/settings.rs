@@ -72,6 +72,11 @@ pub fn default_settings() -> Map<String, Value> {
     m.insert("pxpipeAutoInstall".into(), json!(true));
     m.insert("pxpipeMinChars".into(), json!(25000));
     m.insert("pxpipeTimeoutMs".into(), json!(15000));
+    // Per-provider user header overrides applied at dispatch:
+    // `{ [providerId]: { headers: {..} } }`. 9router declares the same key in the
+    // same position, so this is parity data, not a new column: no migration is
+    // needed and none may be added (`docs/DB-PARITY.md`).
+    m.insert("providerOverrides".into(), json!({}));
     // ninerustrouter-only. 9router has no auto quota tracker, only manual bulk
     // enable/disable buttons, so this key has no counterpart there and is
     // appended after the whole 9router set. Off by default.
@@ -183,11 +188,12 @@ mod tests {
         assert_eq!(keys[0], "cloudEnabled");
         assert_eq!(keys[1], "tunnelEnabled");
         assert_eq!(keys[6], "stickyRoundRobinLimit");
-        // The shared keys end at `pxpipeTimeoutMs`; the ninerustrouter-only keys
-        // follow, so every shared key keeps its position.
-        assert_eq!(keys[keys.len() - 3], "pxpipeTimeoutMs");
+        // The shared keys end at `providerOverrides`; the ninerustrouter-only
+        // keys follow, so every shared key keeps its position.
+        assert_eq!(keys[keys.len() - 3], "providerOverrides");
         assert_eq!(keys[keys.len() - 2], "quotaAutoTrackerEnabled");
         assert_eq!(keys[keys.len() - 1], "autoUpdateCheck");
+        assert!(keys.contains(&"pxpipeTimeoutMs"));
         assert!(keys.contains(&"pxpipeEnabled"));
         assert!(keys.contains(&"samlCert"));
     }

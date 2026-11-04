@@ -23,6 +23,7 @@ import AddCustomModelModal from "./providers/components/AddCustomModelModal.vue"
 import BulkImportCodexModal from "./providers/components/BulkImportCodexModal.vue";
 import CompatibleModelsSection from "./providers/components/CompatibleModelsSection.vue";
 import ConnectionRow from "./providers/components/ConnectionRow.vue";
+import CustomHeadersCard from "./providers/components/CustomHeadersCard.vue";
 import EditCompatibleNodeModal from "./providers/components/EditCompatibleNodeModal.vue";
 import ModelRow from "./providers/components/ModelRow.vue";
 
@@ -1385,6 +1386,9 @@ watch(connections, () => {
         </div>
       </template>
     </Card>
+
+    <!-- Custom Headers -->
+    <CustomHeadersCard v-if="!isCompatible" :provider-id="providerId" />
 
     <!-- Models -->
     <Card>

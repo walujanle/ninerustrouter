@@ -8,6 +8,7 @@
 pub mod lookup;
 pub mod model;
 pub mod normalize;
+pub mod overrides;
 pub mod registry;
 pub mod service;
 pub mod shared;

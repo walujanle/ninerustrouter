@@ -410,13 +410,14 @@ pub trait Executor: Send + Sync {
             if let Some(obj) = transformed.as_object_mut() {
                 obj.remove(crate::utils::fingerprint::RENAMED_TOOL_NAMES_FIELD);
             }
-            let headers = self.build_headers(
+            let mut headers = self.build_headers(
                 req.credentials,
                 req.stream,
                 &url,
                 req.model,
                 Some(&transformed),
             )?;
+            apply_header_overrides(&mut headers, &req.credentials.header_overrides)?;
             let body_bytes = Bytes::from(
                 serde_json::to_vec(&transformed).map_err(|e| ExecError::Build(e.to_string()))?,
             );
@@ -530,6 +531,27 @@ pub trait Executor: Send + Sync {
 
 /// Insert a header, lower-casing the name the way `HeaderMap` does and failing
 /// on a name or value HTTP cannot carry.
+/// Apply `settings.providerOverrides[id].headers` on top of the headers the
+/// executor built.
+///
+/// This runs last on purpose: the override wins over the registry headers, the
+/// hook-generated `X-Conversation-*` ids and auth. The blocked-name list in
+/// `providers::overrides` is what keeps it off `authorization`, not this order.
+pub fn apply_header_overrides(
+    headers: &mut HeaderMap,
+    overrides: &serde_json::Map<String, Value>,
+) -> Result<(), ExecError> {
+    for (name, value) in overrides {
+        // The route layer refuses a non-string, so anything but a string here
+        // came from a hand-edited settings blob and is skipped rather than
+        // stringified into a header the upstream would reject.
+        if let Some(value) = value.as_str() {
+            insert_header(headers, name, value)?;
+        }
+    }
+    Ok(())
+}
+
 pub fn insert_header(headers: &mut HeaderMap, name: &str, value: &str) -> Result<(), ExecError> {
     let name = reqwest::header::HeaderName::from_bytes(name.as_bytes())
         .map_err(|e| ExecError::Build(format!("invalid header name {name:?}: {e}")))?;
@@ -542,6 +564,30 @@ pub fn insert_header(headers: &mut HeaderMap, name: &str, value: &str) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn header_overrides_replace_a_builtin_and_add_a_new_one() {
+        let mut headers = HeaderMap::new();
+        headers.insert("version", "0.159.0".parse().unwrap());
+        headers.insert("authorization", "Bearer tok".parse().unwrap());
+        let overrides = serde_json::json!({
+            "version": "0.160.0",
+            "X-Test": "abc",
+            // A non-string is skipped, not stringified.
+            "X-Num": 5
+        })
+        .as_object()
+        .cloned()
+        .unwrap();
+
+        apply_header_overrides(&mut headers, &overrides).unwrap();
+
+        assert_eq!(headers.get("version").unwrap(), "0.160.0");
+        assert_eq!(headers.get("x-test").unwrap(), "abc");
+        assert!(headers.get("x-num").is_none());
+        // Auth the executor set is untouched.
+        assert_eq!(headers.get("authorization").unwrap(), "Bearer tok");
+    }
 
     #[test]
     fn header_insertion_rejects_a_bad_name_and_value() {
