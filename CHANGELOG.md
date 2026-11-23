@@ -5,6 +5,8 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-11-23
+
 ### Added
 
 - Token saver: a custom system prompt, with its own toggle and text, appended to
