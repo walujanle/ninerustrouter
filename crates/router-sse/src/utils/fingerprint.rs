@@ -19,6 +19,37 @@ use crate::translator::schema::{claude_block, openai_block};
 /// `OPENCODE_FINGERPRINT_TOOLS`.
 pub const OPENCODE_FINGERPRINT_TOOLS: [&str; 4] = ["bash", "glob", "grep", "read"];
 
+/// The alias a gated declaration is renamed to.
+const GATED_TOOL_ALIAS: &str = "run_command";
+
+/// A second, purely textual gate on the same route: a declared tool name
+/// containing "terminal" (case-insensitive) is answered 429
+/// `FreeUsageLimitError` regardless of quota, IP, session or payload size, while
+/// the same body with only that name changed answers normally. Only `tools[]` is
+/// inspected — history and system prompt are not — so the declaration travels
+/// under an alias and the caller's name is restored on the way back, like a
+/// fingerprint-name collision.
+fn is_gated_tool_name(name: &str) -> bool {
+    name.to_ascii_lowercase().contains("terminal")
+}
+
+/// Rename one declaration, keeping whichever shape (`name` / `function.name`)
+/// it arrived in.
+fn with_tool_name(tool: &Value, name: &str) -> Value {
+    let Some(obj) = tool.as_object() else {
+        return tool.clone();
+    };
+    let mut renamed = obj.clone();
+    if let Some(function) = obj.get("function").and_then(Value::as_object) {
+        let mut f = function.clone();
+        f.insert("name".into(), json!(name));
+        renamed.insert("function".into(), Value::Object(f));
+    } else {
+        renamed.insert("name".into(), json!(name));
+    }
+    Value::Object(renamed)
+}
+
 /// The rename map: sent (canonical) name → caller's original name.
 pub type ToolNameMap = HashMap<String, String>;
 
@@ -64,14 +95,33 @@ pub fn conceal_fingerprint_tool_names(tools: Option<&Value>) -> (Vec<Value>, Too
         return (Vec::new(), map);
     }
 
+    // Every declared name is taken, so an alias never collides with a caller's
+    // own tool.
+    let mut taken: HashSet<String> = arr.iter().map(tool_name_of).collect();
     let mut seen_quartet: HashSet<&'static str> = HashSet::new();
     let mut out: Vec<Value> = Vec::with_capacity(arr.len());
     for tool in arr {
-        let Some(obj) = tool.as_object() else {
+        if tool.as_object().is_none() {
             out.push(tool.clone());
             continue;
-        };
+        }
         let current = tool_name_of(tool);
+        if is_gated_tool_name(&current) {
+            let alias = (1..)
+                .map(|i| {
+                    if i == 1 {
+                        GATED_TOOL_ALIAS.to_string()
+                    } else {
+                        format!("{GATED_TOOL_ALIAS}{i}")
+                    }
+                })
+                .find(|a| !taken.contains(a))
+                .expect("the search is unbounded");
+            taken.insert(alias.clone());
+            map.insert(alias.clone(), current);
+            out.push(with_tool_name(tool, &alias));
+            continue;
+        }
         let key = fingerprint_tool_key(Some(&current));
         if key.is_empty() {
             out.push(tool.clone());
@@ -83,15 +133,7 @@ pub fn conceal_fingerprint_tool_names(tools: Option<&Value>) -> (Vec<Value>, Too
         }
         if current != key {
             map.insert(key.to_string(), current.clone());
-            let mut renamed = obj.clone();
-            if let Some(function) = obj.get("function").and_then(Value::as_object) {
-                let mut f = function.clone();
-                f.insert("name".into(), json!(key));
-                renamed.insert("function".into(), Value::Object(f));
-            } else {
-                renamed.insert("name".into(), json!(key));
-            }
-            out.push(Value::Object(renamed));
+            out.push(with_tool_name(tool, key));
         } else {
             out.push(tool.clone());
         }
@@ -128,20 +170,22 @@ pub fn append_missing_fingerprint_tools(tools: &mut Vec<Value>, flat: bool) {
     }
 }
 
-/// `retargetToolChoice(body, map)`.
+/// `retargetToolChoice(body, map)`: point an explicit `tool_choice` at the alias
+/// a concealed caller tool was renamed to. The map is sent → original, so it is
+/// inverted first.
 pub fn retarget_tool_choice(body: &mut Value, map: &ToolNameMap) {
     if map.is_empty() {
         return;
     }
+    let aliases: ToolNameMap = map.iter().map(|(k, v)| (v.clone(), k.clone())).collect();
     let Some(choice) = body.get("tool_choice").and_then(Value::as_object).cloned() else {
         return;
     };
 
     if let Some(name) = choice.get("name").and_then(Value::as_str) {
-        let key = fingerprint_tool_key(Some(name));
-        if !key.is_empty() && map.contains_key(key) {
+        if let Some(alias) = aliases.get(name.trim()) {
             let mut c = choice;
-            c.insert("name".into(), json!(key));
+            c.insert("name".into(), json!(alias));
             body["tool_choice"] = Value::Object(c);
         }
         return;
@@ -149,14 +193,58 @@ pub fn retarget_tool_choice(body: &mut Value, map: &ToolNameMap) {
 
     if let Some(function) = choice.get("function").and_then(Value::as_object)
         && let Some(name) = function.get("name").and_then(Value::as_str)
+        && let Some(alias) = aliases.get(name.trim())
     {
-        let key = fingerprint_tool_key(Some(name));
-        if !key.is_empty() && map.contains_key(key) {
-            let mut f = function.clone();
-            f.insert("name".into(), json!(key));
-            let mut c = choice;
-            c.insert("function".into(), Value::Object(f));
-            body["tool_choice"] = Value::Object(c);
+        let mut f = function.clone();
+        f.insert("name".into(), json!(alias));
+        let mut c = choice;
+        c.insert("function".into(), Value::Object(f));
+        body["tool_choice"] = Value::Object(c);
+    }
+}
+
+/// `aliasHistoryToolCalls(body, map)`: rename prior-turn calls to a concealed
+/// caller tool as well; otherwise the model reads its own earlier calls as calls
+/// to OpenCode's tool of the same name.
+pub fn alias_history_tool_calls(body: &mut Value, map: &ToolNameMap) {
+    if map.is_empty() {
+        return;
+    }
+    let aliases: ToolNameMap = map.iter().map(|(k, v)| (v.clone(), k.clone())).collect();
+
+    if let Some(input) = body.get_mut("input").and_then(Value::as_array_mut) {
+        for item in input.iter_mut() {
+            if item.get("type").and_then(Value::as_str) != Some("function_call") {
+                continue;
+            }
+            if let Some(alias) = item
+                .get("name")
+                .and_then(Value::as_str)
+                .and_then(|n| aliases.get(n))
+            {
+                item["name"] = json!(alias);
+            }
+        }
+    }
+
+    if let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) {
+        for msg in messages.iter_mut() {
+            let Some(calls) = msg.get_mut("tool_calls").and_then(Value::as_array_mut) else {
+                continue;
+            };
+            for call in calls.iter_mut() {
+                let Some(function) = call.get_mut("function").and_then(Value::as_object_mut) else {
+                    continue;
+                };
+                let Some(alias) = function
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .and_then(|n| aliases.get(n))
+                else {
+                    continue;
+                };
+                function.insert("name".into(), json!(alias));
+            }
         }
     }
 }
@@ -176,6 +264,7 @@ pub fn apply_fingerprint_tools(body: &mut Value, flat: bool) -> ToolNameMap {
     append_missing_fingerprint_tools(&mut tools, flat);
     body["tools"] = Value::Array(tools);
     retarget_tool_choice(body, &map);
+    alias_history_tool_calls(body, &map);
 
     let has_choice = body.get("tool_choice").is_some_and(|v| !v.is_null());
     if !has_choice {
@@ -452,6 +541,78 @@ mod tests {
         let mut body = json!({"tool_choice": {"type": "tool", "name": "MyTool"}});
         retarget_tool_choice(&mut body, &map);
         assert_eq!(body["tool_choice"]["name"], json!("MyTool"));
+    }
+
+    #[test]
+    fn a_declared_terminal_name_moves_to_a_gate_free_alias() {
+        let tools = json!([
+            {"type": "function", "name": "run_command"},
+            {"type": "function", "function": {"name": "Terminal", "description": "d"}},
+            {"type": "function", "name": "my_terminal_tool"},
+            {"type": "function", "name": "MyTool"},
+        ]);
+        let mut body = json!({"tools": tools});
+        apply_fingerprint_tools(&mut body, true);
+
+        let names: Vec<String> = body["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(tool_name_of)
+            .collect();
+        // A declared `run_command` already holds the alias, so the gated names
+        // take the numbered variants.
+        assert!(names.iter().any(|n| n == "run_command2"), "{names:?}");
+        assert!(names.iter().any(|n| n == "run_command3"), "{names:?}");
+        assert!(
+            !names
+                .iter()
+                .any(|n| n.to_ascii_lowercase().contains("terminal"))
+        );
+
+        let map = take_renamed_tool_names(&mut body);
+        assert_eq!(
+            map.get("run_command2").map(String::as_str),
+            Some("Terminal")
+        );
+        assert_eq!(
+            map.get("run_command3").map(String::as_str),
+            Some("my_terminal_tool")
+        );
+
+        // The response side puts the caller's spelling back.
+        let mut payload = json!({"content": [{"type": "tool_use", "name": "run_command2"}]});
+        restore_tool_names(&mut payload, Some(&map));
+        assert_eq!(payload["content"][0]["name"], json!("Terminal"));
+    }
+
+    #[test]
+    fn an_explicit_tool_choice_follows_a_gated_alias() {
+        let mut body = json!({
+            "tools": [{"type": "function", "name": "terminal_exec"}],
+            "tool_choice": {"type": "function", "function": {"name": "terminal_exec"}},
+        });
+        apply_fingerprint_tools(&mut body, false);
+        assert_eq!(
+            body["tool_choice"]["function"]["name"],
+            json!("run_command")
+        );
+    }
+
+    #[test]
+    fn prior_turn_calls_are_renamed_to_the_alias() {
+        let mut map = ToolNameMap::new();
+        map.insert("run_command".into(), "Terminal".into());
+        let mut body = json!({
+            "input": [{"type": "function_call", "name": "Terminal"}],
+            "messages": [{"role": "assistant", "tool_calls": [{"function": {"name": "Terminal"}}]}],
+        });
+        alias_history_tool_calls(&mut body, &map);
+        assert_eq!(body["input"][0]["name"], json!("run_command"));
+        assert_eq!(
+            body["messages"][0]["tool_calls"][0]["function"]["name"],
+            json!("run_command")
+        );
     }
 
     #[test]

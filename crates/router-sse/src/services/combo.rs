@@ -712,6 +712,12 @@ where
         if error_text.is_empty() {
             error_text = result.status.to_string();
         }
+        // `checkFallbackError` takes the provider so a provider-scoped rule (the
+        // nvidia `degraded` cooldown) only applies to that provider's members.
+        let member_provider = model_str
+            .find('/')
+            .filter(|i| *i > 0)
+            .map(|i| &model_str[..i]);
 
         if let Some(retry_after) = &result.retry_after {
             let earlier = earliest_retry_after
@@ -722,7 +728,8 @@ where
             }
         }
 
-        let decision = check_fallback_error(result.status, Some(&json!(error_text)), 0);
+        let decision =
+            check_fallback_error(result.status, Some(&json!(error_text)), 0, member_provider);
 
         if !decision.should_fallback && !decision.request_scoped {
             tracing::warn!(

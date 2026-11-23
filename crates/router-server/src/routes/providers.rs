@@ -86,6 +86,16 @@ fn conn_str<'a>(c: &'a Value, key: &str) -> Option<&'a str> {
     c.get(key).and_then(Value::as_str)
 }
 
+/// A stable `x-opencode-session` for the validate probes, derived from the key
+/// so a repeat test looks like the same session. The real executor mints its
+/// own; this only has to satisfy the endpoint's session requirement.
+fn opencode_go_validate_session(api_key: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(api_key.as_bytes());
+    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    format!("validate-{}", &hex[..16])
+}
+
 /// `delete result.apiKey` — remove, never null.
 ///
 /// `idToken` (and the other credentials) can also live inside
@@ -1196,8 +1206,107 @@ async fn custom_resolver(
         // back as `models: []` plus a warning, never a silent zero list.
         "codex" => Some(codex_live_models(state, connection).await),
         "nous" => Some(nous_live_models(state, connection).await),
+        "commandcode" => Some(commandcode_live_models().await),
         _ => None,
     }
+}
+
+/// `COMMANDCODE_MODELS_URL`: the public catalog the vendor CLI itself polls.
+const COMMANDCODE_MODELS_URL: &str = "https://api.commandcode.ai/provider/v1/models?view=client";
+
+/// `parseCommandCodeModels(data)`: the catalog rows the dashboard shape needs.
+/// `hidden` entries are the free/stealth aliases the CLI keeps out of its
+/// picker.
+fn parse_commandcode_models(data: &Value) -> Vec<Value> {
+    let Some(rows) = data.get("data").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    rows.iter()
+        .filter(|m| m.get("id").is_some_and(js_truthy))
+        .filter(|m| m.get("hidden").and_then(Value::as_bool) != Some(true))
+        .map(|m| {
+            let id = m.get("id").cloned().unwrap_or(Value::Null);
+            let name = m
+                .pointer("/display/label")
+                .or_else(|| m.get("name"))
+                .filter(|n| js_truthy(n))
+                .cloned()
+                .unwrap_or_else(|| id.clone());
+            let description = m
+                .pointer("/display/description")
+                .cloned()
+                .unwrap_or(Value::Null);
+            let modalities = m
+                .get("inputModalities")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let efforts = m
+                .get("reasoningEfforts")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let mut out = Map::new();
+            out.insert("id".into(), id);
+            out.insert("name".into(), name);
+            out.insert("description".into(), description);
+            out.insert(
+                "contextLength".into(),
+                m.get("context_length").cloned().unwrap_or(Value::Null),
+            );
+            if let Some(max_output) = m.get("maxOutputTokens").filter(|v| !v.is_null()) {
+                out.insert("maxOutputTokens".into(), max_output.clone());
+            }
+            out.insert(
+                "isVL".into(),
+                json!(modalities.iter().any(|v| v == "image")),
+            );
+            out.insert("isReasoning".into(), json!(!efforts.is_empty()));
+            Value::Object(out)
+        })
+        .collect()
+}
+
+/// `resolveCommandCodeModels`: the live catalog with the CLI identity headers.
+/// Falls back to the static list with a warning, so a vendor outage does not
+/// blank the picker.
+async fn commandcode_live_models() -> ResolverOutcome {
+    let static_models = static_provider_models("commandcode");
+    let Some(client) = probe_client() else {
+        return ResolverOutcome::Models(static_models, None);
+    };
+    let mut request = client.get(COMMANDCODE_MODELS_URL);
+    if let Some(headers) = registry()
+        .transport("commandcode")
+        .and_then(|t| t.headers.as_ref())
+    {
+        for (name, value) in headers {
+            if let Some(value) = value.as_str() {
+                request = request.header(name.as_str(), value);
+            }
+        }
+    }
+    let Ok(res) = request.send().await else {
+        return ResolverOutcome::Models(
+            static_models,
+            Some("CommandCode catalog unreachable; falling back to the static list.".into()),
+        );
+    };
+    if !res.status().is_success() {
+        return ResolverOutcome::Models(
+            static_models,
+            Some("CommandCode returned no live models; falling back to the static list.".into()),
+        );
+    }
+    let data: Value = res.json().await.unwrap_or(Value::Null);
+    let models = parse_commandcode_models(&data);
+    if models.is_empty() {
+        return ResolverOutcome::Models(
+            static_models,
+            Some("CommandCode returned no live models; falling back to the static list.".into()),
+        );
+    }
+    ResolverOutcome::Models(models, None)
 }
 
 /// `resolveNousModels`: the live catalogue, prefixed with `nous/` so a model id
@@ -2262,6 +2371,10 @@ async fn test_api_key_connection(connection: &Value, proxy: &ProxyOptions) -> Pr
             let headers = vec![
                 ("Content-Type".into(), "application/json".into()),
                 ("Authorization".into(), format!("Bearer {api_key}")),
+                (
+                    "x-opencode-session".into(),
+                    opencode_go_validate_session(api_key),
+                ),
             ];
             let body = json!({
                 "model": default_model("opencode-go").unwrap_or_default(),
@@ -2270,7 +2383,7 @@ async fn test_api_key_connection(connection: &Value, proxy: &ProxyOptions) -> Pr
                 "stream": false,
             });
             match post(
-                "https://opencode.ai/zen/go/v1/chat/completions".into(),
+                "https://opencode.ai/inference/go/openai/v1/chat/completions".into(),
                 headers,
                 body,
             )
@@ -2783,6 +2896,10 @@ pub async fn validate(
             let headers = vec![
                 ("Content-Type".to_string(), "application/json".to_string()),
                 ("Authorization".to_string(), format!("Bearer {api_key}")),
+                (
+                    "x-opencode-session".to_string(),
+                    opencode_go_validate_session(api_key),
+                ),
             ];
             let body = json!({
                 "model": default_model("opencode-go").unwrap_or_default(),
@@ -2791,7 +2908,7 @@ pub async fn validate(
                 "stream": false,
             });
             let valid = matches!(
-                plain_probe("https://opencode.ai/zen/go/v1/chat/completions", "POST", &headers, Some(body)).await,
+                plain_probe("https://opencode.ai/inference/go/openai/v1/chat/completions", "POST", &headers, Some(body)).await,
                 Some(s) if s != 401 && s != 403
             );
             Json(valid_body(valid)).into_response()
@@ -3065,6 +3182,38 @@ mod tests {
                 "{provider} must be kept"
             );
         }
+    }
+
+    #[test]
+    fn the_commandcode_catalog_maps_to_the_dashboard_shape() {
+        let data = json!({"data": [
+            {
+                "id": "claude-fable-5-2",
+                "display": {"label": "Claude Fable 5.2", "description": "top"},
+                "context_length": 1000000,
+                "maxOutputTokens": 384000,
+                "inputModalities": ["text", "image"],
+                "reasoningEfforts": ["low", "high"],
+            },
+            {"id": "hidden-alias", "hidden": true, "display": {"label": "Alias"}},
+            {"display": {"label": "no id"}},
+            {"id": "text-only", "name": "Text Only"},
+        ]});
+        let models = parse_commandcode_models(&data);
+        assert_eq!(models.len(), 2, "{models:?}");
+        assert_eq!(models[0]["id"], json!("claude-fable-5-2"));
+        assert_eq!(models[0]["name"], json!("Claude Fable 5.2"));
+        assert_eq!(models[0]["contextLength"], json!(1000000));
+        assert_eq!(models[0]["isVL"], json!(true));
+        assert_eq!(models[0]["isReasoning"], json!(true));
+        // No display label falls back to the id; no modalities/efforts reads false.
+        assert_eq!(models[1]["name"], json!("Text Only"));
+        assert_eq!(models[1]["isVL"], json!(false));
+        assert_eq!(models[1]["isReasoning"], json!(false));
+        assert!(
+            models[1].get("maxOutputTokens").is_none(),
+            "absent, not null"
+        );
     }
 
     #[test]

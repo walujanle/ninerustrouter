@@ -29,7 +29,7 @@ use crate::translator::formats::responses_api::normalize_responses_input;
 
 const SESSION_FIELD: &str = "_opencodeGoSession";
 /// The endpoint Muse Spark and the other Responses models live on.
-const RESPONSES_BASE_URL: &str = "https://opencode.ai/zen/go/v1/responses";
+const RESPONSES_BASE_URL: &str = "https://opencode.ai/inference/go/openai/v1/responses";
 
 /// Derive a session id from the client tool and the resolved session, prefixed
 /// so it cannot collide with the free tier's digest of the same input.
@@ -350,7 +350,7 @@ mod tests {
             .build_headers(
                 &prepared,
                 true,
-                "https://opencode.ai/zen/go/v1/chat/completions",
+                "https://opencode.ai/inference/go/openai/v1/chat/completions",
                 "glm-5.3",
                 None,
             )
@@ -376,7 +376,7 @@ mod tests {
             .build_headers(
                 &credentials,
                 true,
-                "https://opencode.ai/zen/go/v1/chat/completions",
+                "https://opencode.ai/inference/go/openai/v1/chat/completions",
                 "glm-5.3",
                 None,
             )
@@ -400,7 +400,7 @@ mod tests {
             executor
                 .build_url("glm-5.3", true, 0, &credentials)
                 .unwrap(),
-            "https://opencode.ai/zen/go/v1/chat/completions"
+            "https://opencode.ai/inference/go/openai/v1/chat/completions"
         );
     }
 

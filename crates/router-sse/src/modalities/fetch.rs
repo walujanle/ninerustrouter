@@ -50,6 +50,24 @@ pub async fn fetch_core(
         ));
     };
 
+    // Reject a format the provider does not serve, echoing the configured list
+    // rather than the untrusted input (the account-fallback layer classifies
+    // error text).
+    if let Some(formats) = config.get("formats").and_then(Value::as_array)
+        && !formats.is_empty()
+        && !formats.iter().any(|f| f.as_str() == Some(format))
+    {
+        let supported = formats
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(ModalityError::openai(
+            400,
+            format!("Unsupported format for {provider_id}. Supported: {supported}"),
+        ));
+    }
+
     let timeout_ms = config
         .get("timeoutMs")
         .and_then(Value::as_u64)
@@ -204,7 +222,7 @@ async fn run_tavily(
     } else {
         vec![("authorization", format!("Bearer {}", ctx.api_key))]
     };
-    let body = json!({ "urls": [ctx.url], "extract_depth": "basic" });
+    let body = json!({ "urls": [ctx.url], "extract_depth": "basic", "format": ctx.format });
     let (json, _, upstream_ms) = try_fetch(
         ctx,
         "Tavily",

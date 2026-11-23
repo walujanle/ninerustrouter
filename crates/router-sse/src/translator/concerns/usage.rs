@@ -87,6 +87,12 @@ pub fn extract_usage(raw: &Value, kind: &str) -> Option<UsageArgs> {
                 prompt_tokens: input,
                 completion_tokens: output,
                 total_tokens: total,
+                // The CLI reports its cache split under `inputTokenDetails`;
+                // without it a cached turn bills at the full input rate.
+                cached_tokens: n(g("inputTokenDetails").and_then(|d| d.get("cacheReadTokens"))),
+                cache_creation_tokens: n(
+                    g("inputTokenDetails").and_then(|d| d.get("cacheWriteTokens"))
+                ),
                 ..Default::default()
             }
         }
@@ -134,6 +140,21 @@ mod tests {
             usage["total_tokens"],
             json!(11),
             "an explicit total wins over the sum"
+        );
+
+        let usage = to_openai_usage(
+            Some(&json!({
+                "inputTokens": 10,
+                "outputTokens": 2,
+                "inputTokenDetails": {"cacheReadTokens": 4, "cacheWriteTokens": 3},
+            })),
+            "commandcode",
+        )
+        .unwrap();
+        assert_eq!(usage["prompt_tokens_details"]["cached_tokens"], json!(4));
+        assert_eq!(
+            usage["prompt_tokens_details"]["cache_creation_tokens"],
+            json!(3)
         );
     }
 

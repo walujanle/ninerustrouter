@@ -4,6 +4,7 @@ import { computed, ref } from "vue";
 import { Bar } from "vue-chartjs";
 
 import Card from "@/components/ui/UiCard.vue";
+import { fmtCompactTokens } from "@/utils/formatTokens";
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, ChartTooltip, Legend);
 
@@ -11,11 +12,7 @@ const props = defineProps<{ byModel?: Record<string, any> }>();
 
 const COLORS = ["#6366f1", "#14b8a6", "#f59e0b", "#ef4444", "#8b5cf6"];
 
-const fmtTokens = (n: number) => {
-	if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
-	if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
-	return String(n || 0);
-};
+const fmtTokens = (n: number) => fmtCompactTokens(n);
 
 const truncate = (s: string, max = 22) => (s && s.length > max ? `${s.slice(0, max)}…` : s || "");
 

@@ -13,6 +13,7 @@ import { computed, onMounted, ref, watch } from "vue";
 import { Line } from "vue-chartjs";
 
 import Card from "@/components/ui/UiCard.vue";
+import { fmtCompactTokens } from "@/utils/formatTokens";
 
 ChartJS.register(CategoryScale, LinearScale, LineElement, PointElement, ChartTooltip, Legend, Filler);
 
@@ -22,11 +23,7 @@ const data = ref<Array<Record<string, any>>>([]);
 const loading = ref(true);
 const viewMode = ref("tokens");
 
-const fmtTokens = (n: number) => {
-	if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
-	if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
-	return String(n || 0);
-};
+const fmtTokens = (n: number) => fmtCompactTokens(n);
 const fmtCost = (n: number) => `$${(n || 0).toFixed(4)}`;
 const fmtRequests = (n: number) => String(n || 0);
 

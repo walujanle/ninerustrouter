@@ -24,6 +24,7 @@ use crate::translator::concerns::primitives::{
     extract_reasoning_text, js_number, js_string, js_truthy, js_truthy_opt,
 };
 use crate::translator::formats;
+use crate::translator::formats::gemini::extract_text_content;
 use crate::translator::schema::{MODEL_FALLBACK, claude_block, role};
 
 /// Legacy `proxy_` prefix from older request translators. The response strips
@@ -157,10 +158,15 @@ pub fn openai_to_claude_response(chunk: &Value, state: &mut ResponseState) -> Ve
         }));
     }
 
-    if let Some(content) = delta
+    // Mistral streams `content` as an array of typed parts; a bare clone would put
+    // an array inside `text_delta.text` and leak the thinking parts into the
+    // visible text.
+    let text_content = delta
         .and_then(|d| d.get("content"))
         .filter(|c| js_truthy(c))
-    {
+        .map(|c| extract_text_content(c, ""))
+        .unwrap_or_default();
+    if !text_content.is_empty() {
         stop_thinking_block(state, &mut results);
 
         if !state.text_block_started {
@@ -179,7 +185,7 @@ pub fn openai_to_claude_response(chunk: &Value, state: &mut ResponseState) -> Ve
         results.push(json!({
             "type": "content_block_delta",
             "index": index,
-            "delta": {"type": "text_delta", "text": content.clone()},
+            "delta": {"type": "text_delta", "text": text_content},
         }));
     }
 

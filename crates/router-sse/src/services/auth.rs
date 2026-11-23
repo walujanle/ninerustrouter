@@ -518,7 +518,8 @@ pub fn mark_account_unavailable(
             let cooldown = ((reset - now_ms) as u64).min(MAX_RATE_LIMIT_COOLDOWN_MS);
             (true, cooldown, Some(0u32))
         } else {
-            let decision = check_fallback_error(status, Some(&json!(error_text)), backoff_level);
+            let decision =
+                check_fallback_error(status, Some(&json!(error_text)), backoff_level, provider);
             (
                 decision.should_fallback,
                 decision.cooldown_ms,

@@ -16,6 +16,8 @@
 //! matches, and `environment` uses Node's `process.platform` spelling
 //! (`win32`, `darwin`) rather than `std::env::consts::OS`.
 
+use std::collections::HashMap;
+
 use serde_json::{Map, Value, json};
 
 use crate::runtime_config::DEFAULT_MAX_TOKENS;
@@ -23,7 +25,6 @@ use crate::translator::RequestContext;
 use crate::translator::concerns::image::{encode_data_uri, parse_data_uri};
 use crate::translator::concerns::primitives::{
     js_nullish, js_string, js_string_or_empty, js_truthy as truthy, js_truthy_opt as truthy_opt,
-    safe_parse_json,
 };
 use crate::translator::schema::{claude_block, openai_block, role};
 
@@ -64,11 +65,34 @@ pub fn openai_to_commandcode_request(ctx: &mut RequestContext<'_>, body: Value) 
         params.insert("top_p".into(), top_p.clone());
     }
 
+    // `body.reasoning_effort ?? body.output_config.effort ??
+    // body.reasoning.effort` — a Claude effort lands here too.
+    let effort = body
+        .get("reasoning_effort")
+        .filter(|v| !v.is_null())
+        .or_else(|| {
+            body.get("output_config")
+                .and_then(|c| c.get("effort"))
+                .filter(|v| !v.is_null())
+        });
+    let effort = effort.or_else(|| {
+        body.get("reasoning")
+            .and_then(Value::as_object)
+            .and_then(|r| r.get("effort"))
+            .filter(|v| !v.is_null())
+    });
+    if let Some(effort) = effort.and_then(Value::as_str) {
+        params.insert("reasoning_effort".into(), json!(effort));
+    }
+
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
 
     json!({
         "threadId": uuid::Uuid::new_v4().to_string(),
-        "memory": "",
+        "memory": Value::Null,
+        "taste": Value::Null,
+        "skills": Value::Null,
+        "permissionMode": "standard",
         "config": {
             "workingDir": working_dir(),
             "date": today,
@@ -250,6 +274,30 @@ fn convert_messages(messages: Option<&Value>) -> (Vec<Value>, String) {
         _ => &none,
     };
 
+    // `toolCallId -> toolName` across every assistant turn. OpenAI and Claude
+    // tool responses omit the name on `role:"tool"`, and an empty `toolName`
+    // crashes `/alpha/generate`; the id map fills it in and `unknown` covers the
+    // rest.
+    let mut call_names: HashMap<&str, &str> = HashMap::new();
+    for m in list {
+        if m.get("role").and_then(Value::as_str) != Some(role::ASSISTANT) {
+            continue;
+        }
+        let Some(calls) = m.get("tool_calls").and_then(Value::as_array) else {
+            continue;
+        };
+        for tc in calls {
+            let name = tc
+                .get("function")
+                .and_then(|f| f.get("name"))
+                .or_else(|| tc.get("name"))
+                .and_then(Value::as_str);
+            if let (Some(id), Some(name)) = (tc.get("id").and_then(Value::as_str), name) {
+                call_names.insert(id, name);
+            }
+        }
+    }
+
     for m in list {
         if !truthy(m) {
             continue;
@@ -265,13 +313,25 @@ fn convert_messages(messages: Option<&Value>) -> (Vec<Value>, String) {
         }
 
         if role_ == Some(role::TOOL) {
+            let tool_call_id = js_string_or_empty(m.get("tool_call_id").unwrap_or(&Value::Null));
+            let named = m
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|n| !n.is_empty())
+                .or_else(|| call_names.get(tool_call_id.as_str()).copied())
+                .unwrap_or("unknown");
+            let is_error = m.get("is_error").and_then(Value::as_bool) == Some(true)
+                || m.get("status").and_then(Value::as_str) == Some("error");
             out.push(json!({
                 "role": role::TOOL,
                 "content": [{
                     "type": "tool-result",
-                    "toolCallId": js_string_or_empty(m.get("tool_call_id").unwrap_or(&Value::Null)),
-                    "toolName": js_string_or_empty(m.get("name").unwrap_or(&Value::Null)),
-                    "output": {"type": "text", "value": flatten_text(m.get("content"))},
+                    "toolCallId": tool_call_id,
+                    "toolName": named,
+                    "output": {
+                        "type": if is_error { "error-text" } else { "text" },
+                        "value": flatten_text(m.get("content")),
+                    },
                 }],
             }));
             continue;
@@ -282,29 +342,33 @@ fn convert_messages(messages: Option<&Value>) -> (Vec<Value>, String) {
             let rc = ["reasoning_content", "thought", "reasoning"]
                 .iter()
                 .find_map(|k| m.get(*k).filter(|v| truthy(v)).cloned());
-            let tool_calls = m.get("tool_calls").and_then(Value::as_array);
-            let has_tool_calls = tool_calls.is_some_and(|a| !a.is_empty());
-            if rc.is_some() || has_tool_calls {
-                // `text: rc || " "` — the raw reasoning value, not a stringified one.
-                blocks.push(json!({
-                    "type": "reasoning",
-                    "text": rc.unwrap_or_else(|| json!(" ")),
-                }));
+            // A dummy `" "` reasoning block is rejected when there is no real
+            // content, so the block is only emitted for a non-empty string.
+            if let Some(text) = rc.as_ref().and_then(Value::as_str)
+                && !text.trim().is_empty()
+            {
+                blocks.push(json!({"type": "reasoning", "text": text}));
             }
             let text = flatten_text(m.get("content"));
             if !text.is_empty() {
                 blocks.push(json!({"type": openai_block::TEXT, "text": text}));
             }
-            if let Some(tool_calls) = tool_calls {
+            if let Some(tool_calls) = m.get("tool_calls").and_then(Value::as_array) {
                 for tc in tool_calls {
                     let function = tc.get("function");
+                    let input = function
+                        .and_then(|f| f.get("arguments"))
+                        .or_else(|| tc.get("input"));
                     blocks.push(json!({
                         "type": "tool-call",
                         "toolCallId": js_string_or_empty(tc.get("id").unwrap_or(&Value::Null)),
                         "toolName": js_string_or_empty(
-                            function.and_then(|f| f.get("name")).unwrap_or(&Value::Null),
+                            function
+                                .and_then(|f| f.get("name"))
+                                .or_else(|| tc.get("name"))
+                                .unwrap_or(&Value::Null),
                         ),
-                        "input": safe_parse_json_arg(function.and_then(|f| f.get("arguments"))),
+                        "input": safe_parse_json_arg(input),
                     }));
                 }
             }
@@ -326,11 +390,29 @@ fn convert_messages(messages: Option<&Value>) -> (Vec<Value>, String) {
 }
 
 /// The file-local `safeParseJson`: unlike `concerns`' helper, a `null`/absent
-/// input is `{}` rather than a passthrough.
+/// input is `{}` rather than a passthrough, a non-object JSON value is wrapped
+/// as `{value}`, and text that does not parse is rescued as `{raw}` instead of
+/// being cleared to `{}` — the CLI shows the raw string, an empty object loses
+/// it.
 fn safe_parse_json_arg(value: Option<&Value>) -> Value {
-    match value {
-        None | Some(Value::Null) => json!({}),
-        Some(v) => safe_parse_json(v.clone(), json!({})),
+    let Some(v) = value.filter(|v| !v.is_null()) else {
+        return json!({});
+    };
+    let Some(s) = v.as_str() else {
+        // Already structured (a Claude `tc.input` object): use it as-is.
+        return if v.is_object() {
+            v.clone()
+        } else {
+            json!({"value": v})
+        };
+    };
+    if s.trim().is_empty() {
+        return json!({});
+    }
+    match serde_json::from_str::<Value>(s.trim()) {
+        Ok(Value::Object(map)) => Value::Object(map),
+        Ok(other) => json!({"value": other}),
+        Err(_) => json!({"raw": s}),
     }
 }
 
@@ -426,7 +508,18 @@ mod tests {
             .keys()
             .map(String::as_str)
             .collect();
-        assert_eq!(keys, ["threadId", "memory", "config", "params"]);
+        assert_eq!(
+            keys,
+            [
+                "threadId",
+                "memory",
+                "taste",
+                "skills",
+                "permissionMode",
+                "config",
+                "params"
+            ]
+        );
 
         let config: Vec<&str> = out["config"]
             .as_object()
@@ -464,7 +557,10 @@ mod tests {
         assert_eq!(out["config"]["structure"], json!([]));
         assert_eq!(out["config"]["isGitRepo"], json!(false));
         assert_eq!(out["config"]["recentCommits"], json!([]));
-        assert_eq!(out["memory"], json!(""));
+        // The CLI v1.88.5 envelope sends these as explicit nulls.
+        assert_eq!(out["memory"], Value::Null);
+        assert_eq!(out["taste"], Value::Null);
+        assert_eq!(out["skills"], Value::Null);
     }
 
     #[test]
@@ -519,14 +615,65 @@ mod tests {
     }
 
     #[test]
-    fn tool_calls_without_reasoning_get_a_placeholder_reasoning_block() {
+    fn tool_calls_without_reasoning_get_no_dummy_reasoning_block() {
         let out = run(json!({"messages": [{
             "role": "assistant",
             "tool_calls": [{"id": "t1", "function": {"name": "f", "arguments": "{}"}}],
         }]}));
         let content = &out["params"]["messages"][0]["content"];
-        assert_eq!(content[0], json!({"type": "reasoning", "text": " "}));
-        assert_eq!(content[1]["input"], json!({}));
+        // A `" "` placeholder is rejected without real reasoning content, so the
+        // tool call is the only block.
+        assert_eq!(content.as_array().unwrap().len(), 1);
+        assert_eq!(content[0]["type"], json!("tool-call"));
+        assert_eq!(content[0]["input"], json!({}));
+    }
+
+    #[test]
+    fn a_tool_result_fills_in_the_name_and_marks_errors() {
+        let out = run(json!({"messages": [
+            {"role": "assistant", "tool_calls": [
+                {"id": "t1", "function": {"name": "read_file", "arguments": "{}"}},
+            ]},
+            {"role": "tool", "tool_call_id": "t1", "content": "boom", "is_error": true},
+            {"role": "tool", "tool_call_id": "t9", "content": "orphan"},
+        ]}));
+        let first = &out["params"]["messages"][1]["content"][0];
+        assert_eq!(
+            first["toolName"],
+            json!("read_file"),
+            "resolved from the call id"
+        );
+        assert_eq!(
+            first["output"],
+            json!({"type": "error-text", "value": "boom"})
+        );
+        // An unresolvable id still must not send an empty name.
+        let second = &out["params"]["messages"][2]["content"][0];
+        assert_eq!(second["toolName"], json!("unknown"));
+        assert_eq!(second["output"], json!({"type": "text", "value": "orphan"}));
+    }
+
+    #[test]
+    fn an_unparseable_tool_input_is_rescued_as_raw() {
+        let out = run(json!({"messages": [{
+            "role": "assistant",
+            "tool_calls": [{"id": "t1", "function": {"name": "f", "arguments": "{not json"}}],
+        }]}));
+        assert_eq!(
+            out["params"]["messages"][0]["content"][0]["input"],
+            json!({"raw": "{not json"})
+        );
+    }
+
+    #[test]
+    fn a_claude_effort_lands_in_params() {
+        let out = run(json!({
+            "messages": [],
+            "output_config": {"effort": "high"},
+        }));
+        assert_eq!(out["params"]["reasoning_effort"], json!("high"));
+        assert_eq!(out["memory"], Value::Null);
+        assert_eq!(out["permissionMode"], json!("standard"));
     }
 
     #[test]

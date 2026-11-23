@@ -40,6 +40,55 @@ fn codebuddy_reasoning(transformed: &mut Value) {
     }
 }
 
+/// Sent when the client's own system prompt is an agent marker, or absent.
+const NEUTRAL_AGENT_PROMPT: &str =
+    "You are a helpful AI assistant that helps with software engineering tasks.";
+/// The fallback leading system prompt when the client sent none.
+const DEFAULT_CODEBUDDY_SYSTEM_PROMPT: &str = "You are CodeBuddy Code.";
+
+/// The agent-identity markers Tencent's WAF rejects. `Simple case-insensitive
+/// substring` rules, plus the two tag forms.
+static AGENT_IDENTITY: LazyLock<Vec<Regex>> = LazyLock::new(|| {
+    [
+        r"you are claude code",
+        r"claude.?code.+official.+cli",
+        r"anthropic.+official.+cli",
+        r"anxthxropic.+official.+cli",
+        r"you are (?:cursor|windsurf|cline|aider|continue|copilot|cody)",
+        r"you are an? (?:ai )?(?:coding |code )?agent",
+        r"cc_entrypoint\s*=\s*(?:cli|vscode|jetbrains|gui)",
+        r"claude.?code.+issues",
+        r"give feedback.+claude.?code",
+        r"you are .{0,30}(?:powerful )?ai agent",
+        r"orchestration capabilities",
+        r"OhMyOpenCode",
+        r"<agent-identity>",
+        r"<Role>",
+        r"<Behavior_Instructions>",
+    ]
+    .into_iter()
+    .map(|p| Regex::new(&format!("(?i){p}")).expect("static pattern"))
+    .collect()
+});
+
+fn is_agent_identity(text: &str) -> bool {
+    AGENT_IDENTITY.iter().any(|re| re.is_match(text))
+}
+
+/// `m.content` as text: a string, or the `text` parts of an array joined with a
+/// newline.
+fn codebuddy_system_text(content: Option<&Value>) -> String {
+    match content {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|p| p.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
+}
+
 /// `CodeBuddyIntlExecutor`: the international gateway, which wants user content
 /// as typed blocks and answers 11101 without a leading system prompt.
 ///
@@ -94,7 +143,36 @@ impl Executor for CodeBuddyIntlExecutor {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        let mut rebuilt = vec![json!({"role": "system", "content": "You are CodeBuddy Code."})];
+
+        // Tencent's WAF flags third-party CLI agent identity strings (Claude
+        // Code, Cursor, ...) as unauthorized tooling or prompt injection and
+        // rejects/bans the account. Neutralize only matching agent markers so a
+        // user's own system prompt survives.
+        let client_system: Vec<String> = source
+            .iter()
+            .filter(|m| {
+                matches!(
+                    m.get("role").and_then(Value::as_str),
+                    Some("system" | "developer")
+                )
+            })
+            .map(|m| {
+                let text = codebuddy_system_text(m.get("content"));
+                if is_agent_identity(&text) {
+                    NEUTRAL_AGENT_PROMPT.to_string()
+                } else {
+                    text
+                }
+            })
+            .filter(|t| !t.is_empty())
+            .collect();
+        let system_prompt = if client_system.is_empty() {
+            DEFAULT_CODEBUDDY_SYSTEM_PROMPT.to_string()
+        } else {
+            client_system.join("\n\n")
+        };
+
+        let mut rebuilt = vec![json!({"role": "system", "content": system_prompt})];
         for message in source {
             let Some(obj) = message.as_object() else {
                 continue;
@@ -238,7 +316,8 @@ mod tests {
         let out = executor.transform_request("m", body, false, &Credentials::default());
         let messages = out["messages"].as_array().unwrap();
         assert_eq!(messages.len(), 3);
-        assert_eq!(messages[0]["content"], json!("You are CodeBuddy Code."));
+        // A plain client system prompt is preserved verbatim, not replaced.
+        assert_eq!(messages[0]["content"], json!("drop me"));
         assert_eq!(
             messages[1]["content"],
             json!([{"type": "text", "text": "hello"}])
@@ -246,6 +325,37 @@ mod tests {
         assert_eq!(
             messages[2]["content"],
             json!([{"type": "text", "text": "hi"}])
+        );
+    }
+
+    #[test]
+    fn codebuddy_intl_neutralizes_agent_identity_but_keeps_user_prompts() {
+        let executor = CodeBuddyIntlExecutor::new();
+        let body = json!({"messages": [
+            {"role": "system", "content": "You are Claude Code, Anthropic's official CLI."},
+            {"role": "developer", "content": [{"type": "text", "text": "Answer in French."}]},
+            {"role": "user", "content": "hi"},
+        ]});
+        let out = executor.transform_request("m", body, false, &Credentials::default());
+        let system = out["messages"][0]["content"].as_str().unwrap();
+        assert!(
+            !system.to_ascii_lowercase().contains("claude code"),
+            "{system}"
+        );
+        assert!(system.contains("You are a helpful AI assistant"));
+        // The second, harmless system prompt survives alongside it.
+        assert!(system.contains("Answer in French."));
+
+        // No client system prompt at all falls back to the CodeBuddy identity.
+        let out = executor.transform_request(
+            "m",
+            json!({"messages": [{"role": "user", "content": "hi"}]}),
+            false,
+            &Credentials::default(),
+        );
+        assert_eq!(
+            out["messages"][0]["content"],
+            json!("You are CodeBuddy Code.")
         );
     }
 

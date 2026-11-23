@@ -9,6 +9,11 @@ import Input from "@/components/ui/UiInput.vue";
 import Modal from "@/components/ui/UiModal.vue";
 import Toggle from "@/components/ui/UiToggle.vue";
 import { useNotificationStore } from "@/stores/notification";
+import {
+	filterProxyPools,
+	getVisibleProxyPoolSelection,
+	updateProxyPoolSelection,
+} from "@/utils/proxyPoolSelection";
 
 interface ProxyPool {
 	id: string | number;
@@ -86,6 +91,8 @@ const importing = ref(false);
 const deploying = ref(false);
 const testingId = ref<string | number | null>(null);
 const selectedIds = ref<Array<string | number>>([]);
+const statusFilter = ref<"all" | "enabled" | "disabled">("all");
+const selectionAnchor = ref<string | number | null>(null);
 const healthChecking = ref(false);
 const healthProgress = ref({ current: 0, total: 0 });
 const bulkBusy = ref(false);
@@ -272,33 +279,54 @@ async function handleToggleActive(pool: ProxyPool) {
 	}
 }
 
-const allSelected = computed(
-	() =>
-		proxyPools.value.length > 0 &&
-		selectedIds.value.length === proxyPools.value.length,
+const visiblePools = computed(() =>
+	filterProxyPools(proxyPools.value, statusFilter.value),
 );
 
-function toggleSelect(id: string | number) {
-	selectedIds.value = selectedIds.value.includes(id)
-		? selectedIds.value.filter((x) => x !== id)
-		: [...selectedIds.value, id];
+// Selection is reconciled against the visible rows, so a hidden pool is never
+// a bulk target and a stale id left over from a delete drops out on its own.
+const selectedVisibleIds = computed(() =>
+	getVisibleProxyPoolSelection(visiblePools.value, selectedIds.value),
+);
+
+const allSelected = computed(
+	() =>
+		visiblePools.value.length > 0 &&
+		selectedVisibleIds.value.length === visiblePools.value.length,
+);
+
+function toggleSelect(id: string | number, checked: boolean, shiftKey: boolean) {
+	selectedIds.value = updateProxyPoolSelection(visiblePools.value, selectedIds.value, {
+		id,
+		anchorId: selectionAnchor.value,
+		checked,
+		shiftKey,
+	});
+	selectionAnchor.value = id;
 }
 
 function toggleSelectAll() {
 	selectedIds.value = allSelected.value
 		? []
-		: proxyPools.value.map((p) => p.id);
+		: visiblePools.value.map((p) => p.id);
+	selectionAnchor.value = null;
 }
 
 function clearSelection() {
 	selectedIds.value = [];
+	selectionAnchor.value = null;
+}
+
+function setStatusFilter(next: "all" | "enabled" | "disabled") {
+	statusFilter.value = next;
+	clearSelection();
 }
 
 async function bulkSetActive(isActive: boolean) {
 	const targets =
-		selectedIds.value.length > 0
-			? selectedIds.value
-			: proxyPools.value.map((p) => p.id);
+		selectedVisibleIds.value.length > 0
+			? selectedVisibleIds.value
+			: visiblePools.value.map((p) => p.id);
 	if (targets.length === 0) return;
 	bulkBusy.value = true;
 	try {
@@ -327,18 +355,21 @@ async function bulkSetActive(isActive: boolean) {
 }
 
 function bulkDelete() {
-	if (selectedIds.value.length === 0) return;
+	if (selectedVisibleIds.value.length === 0) return;
 	confirmState.value = {
 		title: "Delete Proxy Pools",
-		message: `Delete ${selectedIds.value.length} proxy pool(s)?`,
+		message: `Delete ${selectedVisibleIds.value.length} proxy pool(s)?`,
 		onConfirm: async () => {
+			// Resolve against the visible rows at confirm time: a status change or
+			// delete can land while the dialog is open.
+			const targets = getVisibleProxyPoolSelection(visiblePools.value, selectedIds.value);
 			confirmState.value = null;
 			bulkBusy.value = true;
 			try {
 				let ok = 0;
 				let blocked = 0;
 				let failed = 0;
-				for (const id of selectedIds.value) {
+				for (const id of targets) {
 					try {
 						const res = await fetch(`/api/proxy-pools/${id}`, {
 							method: "DELETE",
@@ -364,9 +395,9 @@ function bulkDelete() {
 
 async function handleHealthCheck() {
 	const targets =
-		selectedIds.value.length > 0
-			? proxyPools.value.filter((p) => selectedIds.value.includes(p.id))
-			: proxyPools.value;
+		selectedVisibleIds.value.length > 0
+			? visiblePools.value.filter((p) => selectedVisibleIds.value.includes(p.id))
+			: visiblePools.value;
 	if (targets.length === 0) return;
 	healthChecking.value = true;
 	healthProgress.value = { current: 0, total: targets.length };
@@ -805,40 +836,56 @@ function handleConfirm() {
 
     <Card>
       <div class="mb-4 flex flex-wrap items-center gap-2">
+        <label class="flex items-center gap-2 text-xs text-text-muted">
+          Status
+          <select
+            id="proxy-pool-status-filter"
+            :value="statusFilter"
+            :disabled="bulkBusy || healthChecking"
+            class="rounded-lg border border-border bg-background px-2 py-1.5 text-sm text-text-main"
+            @change="setStatusFilter(($event.target as HTMLSelectElement).value as 'all' | 'enabled' | 'disabled')"
+          >
+            <option value="all">All</option>
+            <option value="enabled">Enabled</option>
+            <option value="disabled">Disabled</option>
+          </select>
+        </label>
         <label
-          v-if="proxyPools.length > 0"
+          v-if="visiblePools.length > 0"
           class="flex items-center gap-1.5 text-xs text-text-muted cursor-pointer"
         >
           <input
             type="checkbox"
             :checked="allSelected"
+            :disabled="bulkBusy || healthChecking"
             class="size-4 rounded border-black/20 dark:border-white/20"
             @change="toggleSelectAll"
           />
-          {{ allSelected ? "Unselect all" : "Select all" }}
+          {{ allSelected ? "Unselect visible" : "Select all visible" }}
         </label>
         <Badge variant="default">Total: {{ proxyPools.length }}</Badge>
         <Badge variant="success">Active: {{ activeCount }}</Badge>
+        <span class="text-xs text-text-muted">Showing {{ visiblePools.length }} · Shift+click to select a range</span>
       </div>
 
       <div
-        v-if="selectedIds.length > 0 || healthChecking"
+        v-if="selectedVisibleIds.length > 0 || healthChecking"
         class="mb-4 flex flex-wrap items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2"
       >
         <span class="material-symbols-outlined text-[18px] text-primary">checklist</span>
         <span class="text-xs font-medium text-primary">
-          {{ selectedIds.length > 0 ? `${selectedIds.length} selected` : "All pools" }}
+          {{ selectedVisibleIds.length > 0 ? `${selectedVisibleIds.length} selected` : "Visible pools" }}
         </span>
         <div class="ml-auto flex flex-wrap items-center gap-2">
           <Button
             size="sm"
             :icon="healthChecking ? 'progress_activity' : 'health_and_safety'"
-            :disabled="healthChecking || bulkBusy || proxyPools.length === 0"
+            :disabled="healthChecking || bulkBusy || visiblePools.length === 0"
             @click="handleHealthCheck"
           >
             {{ healthChecking ? `Checking ${healthProgress.current}/${healthProgress.total}` : "Health Check" }}
           </Button>
-          <template v-if="selectedIds.length > 0">
+          <template v-if="selectedVisibleIds.length > 0">
             <Button
               size="sm"
               variant="secondary"
@@ -885,9 +932,12 @@ function handleConfirm() {
         </p>
         <Button icon="add" @click="openCreateModal">Add Proxy Pool</Button>
       </div>
+      <div v-else-if="visiblePools.length === 0" class="text-center py-10">
+        <p class="text-sm text-text-muted">No proxy pools match this status.</p>
+      </div>
       <div v-else class="flex flex-col divide-y divide-black/4 dark:divide-white/5">
         <div
-          v-for="pool in proxyPools"
+          v-for="pool in visiblePools"
           :key="pool.id"
           class="flex flex-col gap-3 py-3 sm:flex-row sm:items-center sm:justify-between"
         >
@@ -896,8 +946,9 @@ function handleConfirm() {
               type="checkbox"
               :checked="selectedIds.includes(pool.id)"
               :aria-label="`Select ${pool.name}`"
+              :disabled="bulkBusy || healthChecking"
               class="mt-1 size-4 shrink-0 rounded border-black/20 dark:border-white/20"
-              @change="toggleSelect(pool.id)"
+              @change="toggleSelect(pool.id, ($event.target as HTMLInputElement).checked, ($event as MouseEvent).shiftKey === true)"
             />
             <div class="min-w-0 flex-1">
               <div class="flex items-center gap-2 flex-wrap">

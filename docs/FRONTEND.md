@@ -104,7 +104,7 @@ Six views carry most of the frontend complexity; budget accordingly before touch
 
 - `views/ProviderDetailPage.vue`: 1,657 lines, 7 distinct modal components, model-caps resolution.
 - `views/usage/components/ProviderLimits/ProviderLimitsPanel.vue` + `utils.ts`: 1,377 + 571 lines.
-- `views/ProxyPoolsPage.vue`: 1,284 lines.
+- `views/ProxyPoolsPage.vue`: 1,335 lines. Status filter and shift-click bulk selection live in `src/utils/proxyPoolSelection.ts` so bulk actions never touch a filtered-out row.
 - `views/BasicChatPage.vue`: 1,155 lines.
 - `components/UsageStats.vue`: 552 lines, one SSE stream (`/api/usage/stream`), plus the `TimeAgo` component that confines its 1-second re-render to the timestamp span so per-event updates do not jank the page.
 - `views/usage/components/ProviderTopology.vue`: 509 lines of graph layout.

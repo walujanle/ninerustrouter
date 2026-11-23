@@ -12,7 +12,8 @@ use serde_json::{Map, Value, json};
 use router_db::Db;
 
 use crate::catalog::{
-    aggregate_combo_capabilities, capabilities_from_service_kind, get_capabilities_for_model,
+    aggregate_combo_capabilities, capabilities_from_service_kind, combo_seat_limits,
+    get_capabilities_for_model,
 };
 use crate::executors::http::{ProxyOptions, prepare_send};
 use crate::providers::model::Model;
@@ -341,6 +342,17 @@ pub async fn build_models_list(
             if let Some(caps) = aggregate_combo_capabilities(&combo_models, combo_lookup) {
                 entry.insert("capabilities".into(), caps);
             }
+            // Any seat can serve the request, so the only window a combo can
+            // promise is its smallest. Publishing nothing leaves a client to
+            // guess from the name — and it guesses high.
+            let combo_name = combo.get("name").and_then(Value::as_str);
+            let (window, output) = combo_seat_limits(combo_name, &combo_models, combo_lookup);
+            if let Some(window) = window {
+                entry.insert("context_length".into(), json!(window));
+            }
+            if let Some(output) = output {
+                entry.insert("max_completion_tokens".into(), json!(output));
+            }
         }
         models.push(Value::Object(entry));
     }
@@ -363,12 +375,20 @@ pub async fn build_models_list(
                 {
                     continue;
                 }
-                models.push(json!({
-                    "id": format!("{alias}/{}", model.id),
-                    "object": "model",
-                    "owned_by": alias,
-                    "capabilities": get_capabilities_for_model(Some(alias), &model.id),
-                }));
+                let caps = get_capabilities_for_model(Some(alias), &model.id);
+                let mut entry = Map::new();
+                entry.insert("id".into(), json!(format!("{alias}/{}", model.id)));
+                entry.insert("object".into(), json!("model"));
+                entry.insert("owned_by".into(), json!(alias));
+                entry.insert("capabilities".into(), json!(caps));
+                // The OpenAI/OpenRouter convention puts the limits at the top
+                // level; not every client recurses into `capabilities`.
+                if model_kind(model) == LLM_KIND {
+                    entry.insert("context_length".into(), json!(caps.context_window));
+                    entry.insert("max_completion_tokens".into(), json!(caps.max_output));
+                }
+                add_thinking_levels(&mut entry, Some(alias), &model.id);
+                models.push(Value::Object(entry));
             }
         }
 
@@ -576,6 +596,7 @@ pub async fn build_models_list(
                         }
                     }
                 }
+                add_thinking_levels(&mut model, Some(provider_id), &model_id);
                 models.push(Value::Object(model));
             }
 
@@ -616,6 +637,17 @@ pub async fn build_models_list(
         deduped.push(model);
     }
     deduped
+}
+
+/// `model.thinking_levels`: the selectable effort set the dashboard picker shows,
+/// so a client can build its own effort selector instead of keeping a per-model
+/// table. Omitted when the model has no reasoning.
+fn add_thinking_levels(entry: &mut Map<String, Value>, provider: Option<&str>, model: &str) {
+    if let Some(levels) = crate::catalog::catalog::get_thinking_levels(provider, model)
+        && !levels.is_empty()
+    {
+        entry.insert("thinking_levels".into(), json!(levels));
+    }
 }
 
 /// Map a catalog kind slug to the service kinds it covers.

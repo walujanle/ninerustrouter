@@ -11,29 +11,15 @@
 //!   assistant turn and back-fills `[No response received]`; the global one
 //!   only looks at the immediately-next message. Both run, on different legs.
 
-use std::sync::LazyLock;
-
-use regex::Regex;
 use serde_json::{Map, Value, json};
 
 use crate::translator::RequestContext;
 use crate::translator::concerns::image::encode_data_uri;
 use crate::translator::concerns::primitives::{
-    collapse_text_parts, js_string_or_empty, js_truthy as truthy,
+    collapse_text_parts, js_string_or_empty, js_truthy as truthy, strip_anthropic_billing_header,
 };
 use crate::translator::formats::max_tokens::adjust_max_tokens;
 use crate::translator::schema::{claude_block, openai_block, role};
-
-static BILLING_HEADER: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new("(?i)^x-anthropic-billing-header:[^\n]*(?:\r?\n)?").unwrap());
-
-/// `stripAnthropicBillingHeader(text)`: a non-string becomes `""`.
-fn strip_anthropic_billing_header(text: &Value) -> String {
-    let Some(text) = text.as_str() else {
-        return String::new();
-    };
-    BILLING_HEADER.replace(text, "").to_string()
-}
 
 /// `claudeToOpenAIRequest(model, body, stream)`.
 pub fn claude_to_openai_request(ctx: &mut RequestContext<'_>, body: Value) -> Value {
@@ -107,7 +93,15 @@ pub fn claude_to_openai_request(ctx: &mut RequestContext<'_>, body: Value) -> Va
         result.insert("tool_choice".into(), convert_tool_choice(tool_choice));
     }
 
+    // A Claude `output_config.effort` is the same intent as the OpenAI field, and
+    // sits between the explicit field and the legacy `reasoning.effort`.
     if let Some(effort) = body.get("reasoning_effort") {
+        result.insert("reasoning_effort".into(), effort.clone());
+    } else if let Some(effort) = body
+        .get("output_config")
+        .and_then(|c| c.get("effort"))
+        .filter(|e| !e.is_null())
+    {
         result.insert("reasoning_effort".into(), effort.clone());
     } else if let Some(effort) = body.get("reasoning").and_then(|r| r.get("effort")) {
         result.insert("reasoning_effort".into(), effort.clone());

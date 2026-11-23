@@ -345,6 +345,78 @@ pub fn get_capabilities_for_model(provider: Option<&str>, model: &str) -> Capabi
     caps
 }
 
+/// `comboSeatLimits(combo, combosByName)`: the smallest window and the smallest
+/// output any seat can promise, expanded through nested combo names with a
+/// cycle guard.
+///
+/// Distinct from [`aggregate_combo_capabilities`], which takes the *max* output:
+/// a combo entry publishes what it can always deliver, and output is a promise
+/// like the window. A no-slash seat that names another combo is expanded rather
+/// than resolved as a literal model, or it would publish the 200k floor.
+pub fn combo_seat_limits(
+    name: Option<&str>,
+    models: &[String],
+    combo_lookup: impl Fn(&str) -> Option<Vec<String>>,
+) -> (Option<i64>, Option<i64>) {
+    combo_seat_limits_at(
+        name,
+        models,
+        &combo_lookup,
+        &mut std::collections::HashSet::new(),
+    )
+}
+
+fn combo_seat_limits_at(
+    name: Option<&str>,
+    models: &[String],
+    combo_lookup: &impl Fn(&str) -> Option<Vec<String>>,
+    visiting: &mut std::collections::HashSet<String>,
+) -> (Option<i64>, Option<i64>) {
+    if let Some(name) = name
+        && !visiting.insert(name.to_string())
+    {
+        return (None, None);
+    }
+
+    let mut window: Option<i64> = None;
+    let mut output: Option<i64> = None;
+    let mut offer = |w: Option<i64>, o: Option<i64>| {
+        if let Some(v) = w {
+            window = Some(window.map_or(v, |c| c.min(v)));
+        }
+        if let Some(v) = o {
+            output = Some(output.map_or(v, |c| c.min(v)));
+        }
+    };
+
+    for seat in models {
+        match seat.split_once('/') {
+            Some((alias, rest)) if !alias.is_empty() => {
+                let caps = get_capabilities_for_model(
+                    Some(crate::providers::registry::registry().resolve_alias(alias)),
+                    &crate::thinking::strip_thinking_suffix(rest),
+                );
+                offer(Some(caps.context_window), Some(caps.max_output));
+            }
+            _ => match combo_lookup(seat) {
+                Some(nested) => {
+                    let (w, o) = combo_seat_limits_at(Some(seat), &nested, combo_lookup, visiting);
+                    offer(w, o);
+                }
+                None => {
+                    let caps = get_capabilities_for_model(None, seat);
+                    offer(Some(caps.context_window), Some(caps.max_output));
+                }
+            },
+        }
+    }
+
+    if let Some(name) = name {
+        visiting.remove(name);
+    }
+    (window, output)
+}
+
 /// The hand tables' answer, with the synced catalog ignored and nothing
 /// memoised.
 ///
@@ -565,10 +637,17 @@ fn aggregate_combo_capabilities_at(
             continue;
         }
         let (provider, model) = match full_id.split_once('/') {
-            Some((p, m)) => (Some(p), m),
-            None => (None, full_id.as_str()),
+            // A seat may carry a `(level)` suffix — a picker spelling, not part
+            // of the id — and an alias rather than a provider id. Both have to
+            // be normalised or the provider-scoped entry misses and the seat
+            // falls through to the floor.
+            Some((p, m)) => (
+                Some(crate::providers::registry::registry().resolve_alias(p)),
+                crate::thinking::strip_thinking_suffix(m),
+            ),
+            None => (None, full_id.to_string()),
         };
-        caps.push(get_capabilities_for_model(provider, model));
+        caps.push(get_capabilities_for_model(provider, &model));
     }
 
     let first = caps.first()?;
@@ -1011,7 +1090,7 @@ mod tests {
 
     #[test]
     fn catalog_parses_with_the_expected_shape() {
-        assert_eq!(CATALOG.model_capabilities.len(), 50);
+        assert_eq!(CATALOG.model_capabilities.len(), 65);
         assert_eq!(CATALOG.pattern_capabilities.len(), 102);
         // `qoder-cn` left with the provider; the dump filters the
         // provider-keyed tables against the kept id set.
@@ -1069,6 +1148,58 @@ mod tests {
 
         // A non-reasoning model has no levels at all.
         assert!(get_thinking_levels(None, "llama-3.1-8b").is_none());
+    }
+
+    #[test]
+    fn a_combo_seat_carries_its_level_suffix_and_alias() {
+        // Both are picker spellings, not part of the id: `cx` is codex's alias and
+        // `(max)` a thinking-level override. Neither is normalised here, so the
+        // provider block (keyed `codex`) misses on the alias and the model row
+        // misses on the suffix — the seat falls through to the generic patterns.
+        let with_suffix =
+            aggregate_combo_capabilities(&["codex/gpt-5.6-sol(max)".to_string()], |_| None)
+                .unwrap();
+        let plain =
+            aggregate_combo_capabilities(&["codex/gpt-5.6-sol".to_string()], |_| None).unwrap();
+        assert_eq!(with_suffix, plain);
+        assert_eq!(plain["contextWindow"], json!(372_000));
+
+        // `cx` is the alias; the same entry comes back under either spelling.
+        let by_alias =
+            aggregate_combo_capabilities(&["cx/gpt-5.6-sol".to_string()], |_| None).unwrap();
+        assert_eq!(by_alias["contextWindow"], json!(372_000));
+    }
+
+    #[test]
+    fn combo_seat_limits_take_the_minimum_through_nested_combos() {
+        let lookup = |name: &str| match name {
+            "inner" => Some(vec!["codex/gpt-5.6-sol".to_string()]),
+            "loop" => Some(vec!["loop".to_string()]),
+            _ => None,
+        };
+        // 372k from the codex entry, not the 200k floor.
+        assert_eq!(
+            combo_seat_limits(None, &["cx/gpt-5.6-sol".to_string()], lookup),
+            (Some(372_000), Some(128_000))
+        );
+        // A nested name expands; a self-referential one is cut, not recursed.
+        assert_eq!(
+            combo_seat_limits(Some("outer"), &["inner".to_string()], lookup),
+            (Some(372_000), Some(128_000))
+        );
+        assert_eq!(
+            combo_seat_limits(None, &["loop".to_string()], lookup),
+            (None, None)
+        );
+        // The published output is the smallest seat's, unlike the capability
+        // aggregate, which takes the largest.
+        let mixed = vec![
+            "codex/gpt-5.6-sol".to_string(),
+            "oc/jev-1.13-free".to_string(),
+        ];
+        let (window, output) = combo_seat_limits(None, &mixed, lookup);
+        assert_eq!(output, Some(32_000));
+        assert_eq!(window, Some(64_000));
     }
 
     /// A memoised answer must not outlive the source it was computed under.

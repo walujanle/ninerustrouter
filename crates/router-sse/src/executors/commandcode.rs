@@ -515,7 +515,16 @@ impl Executor for CommandCodeExecutor {
         _credentials: &Credentials,
     ) -> Value {
         if let Some(obj) = body.as_object_mut() {
-            obj.insert("stream".into(), json!(true));
+            // The `/alpha/generate` envelope carries the stream flag inside
+            // `params`; a raw (non-enveloped) body keeps it at the top level.
+            match obj.get_mut("params").and_then(Value::as_object_mut) {
+                Some(params) => {
+                    params.insert("stream".into(), json!(true));
+                }
+                None => {
+                    obj.insert("stream".into(), json!(true));
+                }
+            }
         }
         body
     }

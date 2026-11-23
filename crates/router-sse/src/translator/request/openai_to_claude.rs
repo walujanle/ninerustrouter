@@ -21,7 +21,7 @@ use crate::runtime_config::DEFAULT_MAX_TOKENS;
 use crate::translator::RequestContext;
 use crate::translator::concerns::image::parse_data_uri;
 use crate::translator::concerns::primitives::{
-    js_string, js_truthy, js_truthy_opt, safe_parse_json,
+    js_string, js_truthy, js_truthy_opt, safe_parse_json, strip_anthropic_billing_header,
 };
 use crate::translator::formats::gemini::extract_text_content;
 use crate::translator::formats::max_tokens::adjust_max_tokens;
@@ -65,10 +65,36 @@ pub fn openai_to_claude_request(ctx: &mut RequestContext<'_>, body: Value) -> Va
                 continue;
             }
             match msg.get("content") {
-                Some(Value::String(s)) => system_parts.push(s.clone()),
-                other => {
-                    system_parts.push(extract_text_content(other.unwrap_or(&Value::Null), "\n"))
+                Some(Value::String(s)) => {
+                    let stripped = strip_anthropic_billing_header(&json!(s));
+                    if !stripped.is_empty() {
+                        system_parts.push(stripped);
+                    }
                 }
+                Some(Value::Array(parts)) => {
+                    // Each text part is stripped on its own, so a billing-only
+                    // block is dropped rather than leaving a blank line in the
+                    // cached prompt.
+                    for part in parts {
+                        if part.get("type").and_then(Value::as_str) != Some(openai_block::TEXT) {
+                            continue;
+                        }
+                        let stripped = strip_anthropic_billing_header(
+                            part.get("text").unwrap_or(&Value::Null),
+                        );
+                        if !stripped.is_empty() {
+                            system_parts.push(stripped);
+                        }
+                    }
+                }
+                Some(other) => {
+                    let text = extract_text_content(other, "\n");
+                    let stripped = strip_anthropic_billing_header(&json!(text));
+                    if !stripped.is_empty() {
+                        system_parts.push(stripped);
+                    }
+                }
+                None => {}
             }
         }
 
@@ -297,6 +323,36 @@ fn push_message(result: &mut Map<String, Value>, msg: Value) {
     }
 }
 
+/// `resolveToolResultIsError(source)`: Claude's public API treats `is_error` as
+/// optional (default false), but Zed and other strict serde parsers require the
+/// field present on every `tool_result` and 400 the turn when it is missing.
+fn resolve_tool_result_is_error(source: &Value) -> bool {
+    source.get("is_error").and_then(Value::as_bool) == Some(true)
+        || source.get("status").and_then(Value::as_str) == Some("error")
+}
+
+/// `buildToolResultBlock(toolUseId, content, source)`: `is_error` is always
+/// emitted, never optional.
+fn build_tool_result_block(
+    tool_use_id: Option<&Value>,
+    content: Option<&Value>,
+    source: &Value,
+) -> Value {
+    let mut block = Map::new();
+    block.insert("type".into(), json!(claude_block::TOOL_RESULT));
+    if let Some(v) = tool_use_id {
+        block.insert("tool_use_id".into(), v.clone());
+    }
+    if let Some(v) = content {
+        block.insert("content".into(), v.clone());
+    }
+    block.insert(
+        "is_error".into(),
+        json!(resolve_tool_result_is_error(source)),
+    );
+    Value::Object(block)
+}
+
 /// `getContentBlocksFromMessage(msg, toolNameMap)`.
 ///
 /// The second parameter is never read — the prefix comes from the constant —
@@ -309,15 +365,11 @@ fn get_content_blocks_from_message(msg: &Value) -> Vec<Value> {
         // `tool_use_id: msg.tool_call_id` and `content: msg.content` are
         // undefined when the key is absent, and an undefined value omits the
         // key from the wire object rather than writing null.
-        let mut block = Map::new();
-        block.insert("type".into(), json!(claude_block::TOOL_RESULT));
-        if let Some(v) = msg.get("tool_call_id") {
-            block.insert("tool_use_id".into(), v.clone());
-        }
-        if let Some(v) = msg.get("content") {
-            block.insert("content".into(), v.clone());
-        }
-        blocks.push(Value::Object(block));
+        blocks.push(build_tool_result_block(
+            msg.get("tool_call_id"),
+            msg.get("content"),
+            msg,
+        ));
     } else if msg_role == Some(role::USER) {
         match msg.get("content") {
             Some(Value::String(content)) => {
@@ -336,18 +388,11 @@ fn get_content_blocks_from_message(msg: &Value) -> Vec<Value> {
                             }
                         }
                         Some(claude_block::TOOL_RESULT) => {
-                            let mut block = Map::new();
-                            block.insert("type".into(), json!(claude_block::TOOL_RESULT));
-                            if let Some(v) = part.get("tool_use_id") {
-                                block.insert("tool_use_id".into(), v.clone());
-                            }
-                            if let Some(v) = part.get("content") {
-                                block.insert("content".into(), v.clone());
-                            }
-                            if let Some(is_error) = part.get("is_error").filter(|v| js_truthy(v)) {
-                                block.insert("is_error".into(), is_error.clone());
-                            }
-                            blocks.push(Value::Object(block));
+                            blocks.push(build_tool_result_block(
+                                part.get("tool_use_id"),
+                                part.get("content"),
+                                part,
+                            ));
                         }
                         Some(openai_block::IMAGE_URL) => {
                             let url = part.get("image_url").and_then(|i| i.get("url"));
@@ -588,13 +633,27 @@ mod tests {
             msgs[0]["content"][1]["cache_control"],
             json!({"type": "ephemeral"})
         );
+        // `is_error` is always on the wire: strict parsers 400 without it.
         assert_eq!(
             msgs[1],
             json!({
                 "role": "user",
-                "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "42"}],
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "t1",
+                    "content": "42",
+                    "is_error": false,
+                }],
             })
         );
+    }
+
+    #[test]
+    fn a_tool_result_closed_with_status_error_sets_is_error() {
+        let out = run(json!({
+            "messages": [{"role": "tool", "tool_call_id": "t1", "content": "boom", "status": "error"}],
+        }));
+        assert_eq!(out["messages"][0]["content"][0]["is_error"], json!(true));
     }
 
     #[test]

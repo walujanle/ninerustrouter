@@ -202,6 +202,23 @@ pub fn model_quota_family(alias_or_id: &str, model_id: &str) -> String {
         .unwrap_or_else(|| crate::providers::model::DEFAULT_QUOTA_FAMILY.to_string())
 }
 
+/// `getModelParams(aliasOrId, modelId)`: the extra request params a model
+/// declares in the registry (`["input_type"]` for NVIDIA's asymmetric
+/// embeddings). Absent means the model takes none.
+pub fn model_params(alias_or_id: &str, model_id: &str) -> Vec<String> {
+    find_model(registry().models_for(alias_or_id), model_id, alias_or_id)
+        .and_then(|m| m.params.as_ref())
+        .and_then(serde_json::Value::as_array)
+        .map(|params| {
+            params
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// `getModelStrip(alias, modelId)`.
 pub fn model_strip(alias_or_id: &str, model_id: &str) -> Vec<String> {
     find_model(registry().models_for(alias_or_id), model_id, alias_or_id)

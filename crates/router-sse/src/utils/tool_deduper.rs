@@ -5,7 +5,9 @@
 //! and a rule that fired on a name it merely resembles would silently delete a
 //! tool the model needs.
 
-use serde_json::Value;
+use serde_json::{Value, json};
+
+use crate::translator::schema::claude_block;
 
 /// One dedup rule: any `triggers` name present pulls every `strip` name out.
 struct Rule {
@@ -75,6 +77,67 @@ pub struct Deduped {
     /// The names that were dropped, in insertion order — the order the names
     /// were scanned.
     pub stripped: Vec<String>,
+}
+
+/// `cleanStrippedToolReferences(messages, strippedNames)`: drop `tool_reference`
+/// parts inside a `tool_result` when they name a tool this pass just removed.
+///
+/// Claude Code's deferred tool loading returns those blocks, so a history ref
+/// can outlive its tool. Strict Claude-compatible upstreams reject the whole
+/// request over it (z.ai answers 400 code 1210). An emptied content array is
+/// itself invalid, so it becomes one text note telling the model the tool is
+/// gone. Returns how many references were replaced.
+pub fn clean_stripped_tool_references(messages: &mut Value, stripped: &[String]) -> usize {
+    if stripped.is_empty() {
+        return 0;
+    }
+    let Some(messages) = messages.as_array_mut() else {
+        return 0;
+    };
+    let mut cleaned = 0;
+    for msg in messages {
+        let Some(content) = msg.get_mut("content").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        for block in content {
+            if block.get("type").and_then(Value::as_str) != Some(claude_block::TOOL_RESULT) {
+                continue;
+            }
+            let Some(parts) = block.get_mut("content").and_then(Value::as_array_mut) else {
+                continue;
+            };
+            let removed: Vec<String> = parts
+                .iter()
+                .filter(|p| {
+                    p.get("type").and_then(Value::as_str) == Some(claude_block::TOOL_REFERENCE)
+                })
+                .filter_map(|p| p.get("tool_name").and_then(Value::as_str))
+                .filter(|name| stripped.contains(&name.to_string()))
+                .map(str::to_string)
+                .collect();
+            if removed.is_empty() {
+                continue;
+            }
+            cleaned += removed.len();
+            parts.retain(|p| {
+                p.get("type").and_then(Value::as_str) != Some(claude_block::TOOL_REFERENCE)
+                    || p.get("tool_name")
+                        .and_then(Value::as_str)
+                        .is_none_or(|name| !stripped.contains(&name.to_string()))
+            });
+            if parts.is_empty() {
+                parts.push(json!({
+                    "type": claude_block::TEXT,
+                    "text": removed
+                        .iter()
+                        .map(|name| format!("[Tool {name} is unavailable]"))
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                }));
+            }
+        }
+    }
+    cleaned
 }
 
 /// `dedupeTools(tools)`.

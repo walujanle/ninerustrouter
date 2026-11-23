@@ -8,6 +8,8 @@ export interface ModelCaps {
 	reasoning: boolean;
 	contextWindow?: number;
 	maxOutput?: number;
+	/** The selectable effort set `/api/models` publishes for this model. */
+	thinkingLevels?: string[];
 }
 
 interface CapsMaps {

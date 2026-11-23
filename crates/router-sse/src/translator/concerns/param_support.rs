@@ -58,11 +58,21 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
         },
         // NVIDIA NIM treats `reasoning` and `reasoning_content` as aliases for one
         // field; sending both makes its deserializer report a duplicate field.
-        // Keep the OpenAI canonical spelling on assistant history.
+        // Keep the OpenAI canonical spelling on assistant history. It also
+        // rejects client metadata, Anthropic beta/budget and OpenAI extras with
+        // a 400.
         Rule {
             provider: Some("nvidia"),
             matcher: Matcher::Any,
-            drop: &[],
+            drop: &[
+                "client_metadata",
+                "prompt_cache_key",
+                "service_tier",
+                "anthropic_beta",
+                "thinking_budget",
+                "user_id",
+                "custom_field",
+            ],
             drop_message_fields: &[],
             rename_message_fields: &[("reasoning", "reasoning_content")],
         },

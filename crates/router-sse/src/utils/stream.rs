@@ -267,7 +267,14 @@ impl SseStream {
         }
 
         if self.opts.mode == StreamMode::Passthrough {
-            if !self.buffer.is_empty() {
+            // An unterminated trailing `data: [DONE]` is the upstream sentinel.
+            // Forwarding it raw glues it onto the framed one emitted below.
+            let tail = self.buffer.trim();
+            let tail_is_done = tail
+                .strip_prefix("data:")
+                .map(str::trim)
+                .is_some_and(|d| d == "[DONE]");
+            if !tail_is_done && !self.buffer.is_empty() {
                 let mut output = self.buffer.clone();
                 if self.buffer.starts_with("data:") && !self.buffer.starts_with("data: ") {
                     output = format!("data: {}", &self.buffer[5..]);
@@ -370,6 +377,12 @@ impl SseStream {
         let mut responses_terminal = false;
 
         let data = trimmed.strip_prefix("data:").map(str::trim);
+        // Upstream already sent the sentinel; `flush` must not append a second
+        // one. Without this the client gets `data: [DONE]data: [DONE]` on one
+        // line, which strict SSE readers see as a single non-JSON event.
+        if data == Some("[DONE]") {
+            self.stream_done_sent = true;
+        }
         if let Some(data) = data.filter(|d| *d != "[DONE]") {
             let Ok(mut parsed) = serde_json::from_str::<Value>(data) else {
                 // Non-JSON data lines are dropped rather than forwarded: upstream
@@ -990,6 +1003,25 @@ mod tests {
     fn passthrough_flush_terminates_with_done() {
         let mut stream = passthrough();
         assert!(text_of(stream.flush()).ends_with("data: [DONE]\n\n"));
+    }
+
+    #[test]
+    fn a_forwarded_done_sentinel_is_not_repeated_by_flush() {
+        let mut stream = passthrough();
+        let first = text_of(stream.push(b"data: [DONE]\n\n"));
+        assert!(first.contains("[DONE]"), "{first}");
+        let flushed = text_of(stream.flush());
+        assert!(!flushed.contains("[DONE]"), "{flushed}");
+    }
+
+    #[test]
+    fn an_unterminated_trailing_done_emits_one_framed_sentinel() {
+        let mut stream = passthrough();
+        // No trailing newline: the sentinel stays in the partial-line buffer.
+        std::mem::drop(stream.push(b"data: [DONE]"));
+        let flushed = text_of(stream.flush());
+        assert_eq!(flushed.matches("[DONE]").count(), 1, "{flushed}");
+        assert!(flushed.ends_with("data: [DONE]\n\n"), "{flushed}");
     }
 
     #[test]

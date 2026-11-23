@@ -453,8 +453,22 @@ pub fn is_last_message_from_user(body: &Value) -> bool {
 /// `normalizeThinkingConfig(body)`: OpenAI's `reasoning_effort` is
 /// request-level and must survive tool-result turns, so only the Claude-shaped
 /// `thinking` field is dropped.
+///
+/// A trailing `role: "tool"` continues a user turn: dropping `thinking` there
+/// loses the client's budget mid tool loop.
 pub fn normalize_thinking_config(body: &mut Value) {
     if is_last_message_from_user(body) {
+        return;
+    }
+    let last_is_tool = body
+        .get("messages")
+        .or_else(|| body.get("contents"))
+        .and_then(Value::as_array)
+        .and_then(|items| items.last())
+        .and_then(|last| last.get("role"))
+        .and_then(Value::as_str)
+        == Some(role::TOOL);
+    if last_is_tool {
         return;
     }
     if let Some(obj) = body.as_object_mut() {
@@ -699,6 +713,22 @@ mod tests {
         });
         normalize_thinking_config(&mut body);
         assert!(body.get("thinking").is_some(), "user's turn keeps it");
+
+        // A tool result continues the user turn.
+        let mut body = json!({
+            "thinking": {"type": "enabled", "budget_tokens": 4096},
+            "messages": [
+                {"role": "user", "content": "go"},
+                {"role": "assistant", "content": null},
+                {"role": "tool", "tool_call_id": "t1", "content": "ok"},
+            ],
+        });
+        normalize_thinking_config(&mut body);
+        assert_eq!(
+            body["thinking"],
+            json!({"type": "enabled", "budget_tokens": 4096}),
+            "a tool-result turn keeps the budget"
+        );
     }
 
     #[test]

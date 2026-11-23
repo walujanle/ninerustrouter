@@ -258,6 +258,23 @@ fn resolve_format(target_format: &str, provider: Option<&str>, caps: &Capabiliti
     if target_format == "commandcode" {
         return "commandcode".to_string();
     }
+    // A multi-endpoint provider can declare, per `transports[]` entry, the
+    // thinking shape that endpoint accepts. It wins over the provider block and
+    // over the model's `thinkingFormat`, which describe the Chat wire: strict
+    // `/responses` upstreams reject Chat-shaped `reasoning_effort` /
+    // `thinking: {type}` and need `reasoning: {effort, summary}` instead.
+    if let Some(transport_fmt) = provider
+        .and_then(|p| crate::providers::registry::registry().get(p))
+        .and_then(|entry| {
+            entry
+                .transports
+                .iter()
+                .find(|t| t.format.as_deref() == Some(target_format))
+        })
+        .and_then(|t| t.thinking_format.as_deref())
+    {
+        return transport_fmt.to_string();
+    }
     if let Some(provider_fmt) = provider
         .and_then(|p| crate::providers::registry::registry().transport(p))
         .and_then(|t| t.thinking_format.as_deref())
@@ -448,6 +465,7 @@ fn apply_format(
     caps: &Capabilities,
     supported_levels: Option<&[String]>,
     display: Option<&str>,
+    budget_passthrough: bool,
 ) {
     let none = *cfg == ThinkingMode::None;
     let can_disable = caps.thinking_can_disable;
@@ -582,7 +600,15 @@ fn apply_format(
                 obj.insert("thinking".into(), json!({"type": "disabled"}));
                 return;
             }
-            obj.insert("thinking".into(), json!({"type": "enabled"}));
+            // First-party DeepSeek ignores `budget_tokens`; a self-hosted
+            // vLLM/SGLang node validates it, so only those get the passthrough.
+            match (budget_passthrough, &eff) {
+                (true, ThinkingMode::Budget(b)) if *b > 0.0 => obj.insert(
+                    "thinking".into(),
+                    json!({"type": "enabled", "budget_tokens": js_json_number(*b)}),
+                ),
+                _ => obj.insert("thinking".into(), json!({"type": "enabled"})),
+            };
             let level = to_level(&eff);
             let effort = match level.as_deref() {
                 Some("xhigh") | Some("max") => "max",
@@ -668,7 +694,16 @@ fn apply_format(
                 params.remove("reasoning_effort");
                 return;
             }
-            if let Some(level) = to_level(&eff) {
+            // The CLI accepts only its own level set, so `auto` maps to `high`,
+            // `minimal` to `low`, and anything outside the list is dropped
+            // rather than sent and rejected.
+            const VALID_LEVELS: [&str; 6] = ["off", "low", "medium", "high", "xhigh", "max"];
+            let level = to_level(&eff).map(|level| match level.as_str() {
+                "auto" => "high".to_string(),
+                "minimal" => "low".to_string(),
+                _ => level,
+            });
+            if let Some(level) = level.filter(|l| VALID_LEVELS.contains(&l.as_str())) {
                 params.insert("reasoning_effort".into(), json!(level));
             }
         }
@@ -718,6 +753,10 @@ pub fn apply_thinking(
         .and_then(|t| t.get("display"))
         .and_then(Value::as_str)
         .map(str::to_string);
+    // A self-hosted compatible node validates `thinking.budget_tokens`; the
+    // shipped providers are first-party and ignore it.
+    let budget_passthrough =
+        provider.is_some_and(crate::providers::ui::is_openai_compatible_provider);
     strip_all(body);
     apply_format(
         &fmt,
@@ -726,6 +765,7 @@ pub fn apply_thinking(
         &caps,
         supported_levels.as_deref(),
         display.as_deref(),
+        budget_passthrough,
     );
 }
 

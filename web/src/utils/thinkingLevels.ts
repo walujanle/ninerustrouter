@@ -1,13 +1,10 @@
 // Thinking-level sets for the model picker.
 //
-// The Rust `/api/models` route does not project `caps.thinkingFormat`, so the
-// level set cannot be derived from it. The client still has the per-model
-// `reasoning` flag (from `/api/models`), the raw registry model rows
-// (`thinkingLevels`, present on the Codex `cx` models) and the shared
-// `PATTERN_THINKING` overrides — enough to reproduce the picker for the models
-// that render one. Models whose set only came from `thinkingFormat` fall back
-// to the shared base set.
-// ponytail: format-derived sets return when the backend exposes thinkingFormat.
+// `/api/models` publishes the authoritative set in `caps.thinkingLevels`
+// (derived from `thinkingFormat` and `PATTERN_THINKING` server-side), so the
+// client copy below is only a fallback for a row fetched before that field
+// existed. Keep the two in step: a level the backend offers and this table
+// omits still renders, one this table invents does not.
 
 const BASE = ["none", "low", "medium", "high"];
 const CODEX_GPT_5_6_LEVELS = [
@@ -76,10 +73,11 @@ function matchPattern(pattern: string, model: string): boolean {
 export function getThinkingLevels(
 	provider: string,
 	model: string,
-	caps: { reasoning?: boolean } | null | undefined,
+	caps: { reasoning?: boolean; thinkingLevels?: string[] } | null | undefined,
 	modelRows: Array<Record<string, any>> = [],
 ): string[] | null {
 	if (!caps?.reasoning) return null;
+	if (caps.thinkingLevels?.length) return caps.thinkingLevels;
 	const baseId = String(model || "").replace(/\([^()]+\)\s*$/, "");
 
 	const rowLevels = modelRows.find((entry) => entry.id === baseId)

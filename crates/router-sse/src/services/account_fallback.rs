@@ -34,6 +34,9 @@ const COOLDOWN_SHORT_MS: u64 = 5 * 1000;
 /// One `ERROR_RULES` entry. `None` for `cooldown_ms` means the rule is a
 /// backoff rule.
 struct ErrorRule {
+    /// Restricts the rule to one provider, so a generic word like "degraded"
+    /// does not change another provider's behaviour.
+    provider: Option<&'static str>,
     text: Option<&'static str>,
     status: Option<u16>,
     cooldown_ms: Option<u64>,
@@ -44,79 +47,102 @@ struct ErrorRule {
 /// rules. Written as a const array rather than a match so the order is visible
 /// and a reordering cannot hide inside control flow.
 const ERROR_RULES: &[ErrorRule] = &[
+    // NVIDIA NIM answers 400 "degraded" when one model cluster is unhealthy.
+    // The credential is fine, so the provider-scoped 15-minute lock below must
+    // not cool the connection down.
     ErrorRule {
+        provider: Some("nvidia"),
+        text: Some("degraded"),
+        status: None,
+        cooldown_ms: Some(15 * 60 * 1000),
+        backoff: false,
+    },
+    ErrorRule {
+        provider: None,
         text: Some("no credentials"),
         status: None,
         cooldown_ms: Some(COOLDOWN_LONG_MS),
         backoff: false,
     },
     ErrorRule {
+        provider: None,
         text: Some("request not allowed"),
         status: None,
         cooldown_ms: Some(COOLDOWN_SHORT_MS),
         backoff: false,
     },
     ErrorRule {
+        provider: None,
         text: Some("improperly formed request"),
         status: None,
         cooldown_ms: Some(COOLDOWN_LONG_MS),
         backoff: false,
     },
     ErrorRule {
+        provider: None,
         text: Some("rate limit"),
         status: None,
         cooldown_ms: None,
         backoff: true,
     },
     ErrorRule {
+        provider: None,
         text: Some("too many requests"),
         status: None,
         cooldown_ms: None,
         backoff: true,
     },
     ErrorRule {
+        provider: None,
         text: Some("quota exceeded"),
         status: None,
         cooldown_ms: None,
         backoff: true,
     },
     ErrorRule {
+        provider: None,
         text: Some("capacity"),
         status: None,
         cooldown_ms: None,
         backoff: true,
     },
     ErrorRule {
+        provider: None,
         text: Some("overloaded"),
         status: None,
         cooldown_ms: None,
         backoff: true,
     },
     ErrorRule {
+        provider: None,
         text: None,
         status: Some(401),
         cooldown_ms: Some(COOLDOWN_LONG_MS),
         backoff: false,
     },
     ErrorRule {
+        provider: None,
         text: None,
         status: Some(402),
         cooldown_ms: Some(COOLDOWN_LONG_MS),
         backoff: false,
     },
     ErrorRule {
+        provider: None,
         text: None,
         status: Some(403),
         cooldown_ms: Some(COOLDOWN_LONG_MS),
         backoff: false,
     },
     ErrorRule {
+        provider: None,
         text: None,
         status: Some(404),
         cooldown_ms: Some(COOLDOWN_LONG_MS),
         backoff: false,
     },
     ErrorRule {
+        provider: None,
         text: None,
         status: Some(429),
         cooldown_ms: None,
@@ -158,22 +184,33 @@ pub fn get_quota_cooldown(backoff_level: u32) -> u64 {
     cooldown.min(BACKOFF_MAX_MS)
 }
 
-/// `checkFallbackError(status, errorText, backoffLevel = 0)`.
+/// `checkFallbackError(status, errorText, backoffLevel = 0, provider = null)`.
 ///
 /// `error_text` is matched case-insensitively as a substring; a non-string
-/// value is serialized to its string form first.
+/// value is serialized to its string form first. A rule that names a provider
+/// is skipped for every other one, so its wording ("degraded") cannot change
+/// another provider's behaviour.
 pub fn check_fallback_error(
     status: u16,
     error_text: Option<&Value>,
     backoff_level: u32,
+    provider: Option<&str>,
 ) -> FallbackDecision {
     let lower = match error_text {
         Some(Value::String(s)) => s.to_lowercase(),
         Some(v) if js_truthy(v) => js_string(v).to_lowercase(),
         _ => String::new(),
     };
+    // The registry resolves an alias (`ocg`, `cmc`) to the id a rule names.
+    let registry = crate::providers::registry::registry();
+    let provider = provider.map(|p| registry.resolve_alias(p));
 
     for rule in ERROR_RULES {
+        if let Some(rule_provider) = rule.provider
+            && Some(rule_provider) != provider
+        {
+            continue;
+        }
         let text_hit = rule
             .text
             .is_some_and(|t| !lower.is_empty() && lower.contains(t));
@@ -392,12 +429,17 @@ pub fn reset_account_state(account: &Value) -> Value {
 /// `rateLimitedUntil` is assigned unconditionally: a request-scoped 400
 /// therefore clears any pending cooldown on the account rather than leaving it
 /// in place. That is deliberate.
-pub fn apply_error_state(account: &Value, status: u16, error_text: Option<&Value>) -> Value {
+pub fn apply_error_state(
+    account: &Value,
+    status: u16,
+    error_text: Option<&Value>,
+    provider: Option<&str>,
+) -> Value {
     let Some(obj) = account.as_object() else {
         return account.clone();
     };
     let backoff_level = obj.get("backoffLevel").and_then(Value::as_u64).unwrap_or(0) as u32;
-    let decision = check_fallback_error(status, error_text, backoff_level);
+    let decision = check_fallback_error(status, error_text, backoff_level, provider);
 
     let mut out = obj.clone();
     out.insert(
@@ -442,14 +484,14 @@ mod tests {
     fn text_rules_beat_status_rules() {
         // A 429 whose body says "request not allowed" gets the short cooldown,
         // not the backoff: the text rule is earlier in the table.
-        let d = check_fallback_error(429, Some(&json!("Request not allowed")), 0);
+        let d = check_fallback_error(429, Some(&json!("Request not allowed")), 0, None);
         assert_eq!(d.cooldown_ms, COOLDOWN_SHORT_MS);
         assert_eq!(d.new_backoff_level, None);
     }
 
     #[test]
     fn text_rules_are_case_insensitive_substrings() {
-        let d = check_fallback_error(500, Some(&json!("provider CAPACITY exceeded")), 0);
+        let d = check_fallback_error(500, Some(&json!("provider CAPACITY exceeded")), 0, None);
         assert!(d.should_fallback);
         assert_eq!(d.new_backoff_level, Some(1));
     }
@@ -457,14 +499,14 @@ mod tests {
     #[test]
     fn status_rules_apply_without_text() {
         assert_eq!(
-            check_fallback_error(401, None, 0).cooldown_ms,
+            check_fallback_error(401, None, 0, None).cooldown_ms,
             COOLDOWN_LONG_MS
         );
         assert_eq!(
-            check_fallback_error(404, None, 0).cooldown_ms,
+            check_fallback_error(404, None, 0, None).cooldown_ms,
             COOLDOWN_LONG_MS
         );
-        let d = check_fallback_error(429, None, 3);
+        let d = check_fallback_error(429, None, 3, None);
         assert_eq!(d.new_backoff_level, Some(4));
         // `base * 2^(level - 1)`, so level 4 is 2000 * 8.
         assert_eq!(d.cooldown_ms, 16000);
@@ -472,7 +514,7 @@ mod tests {
 
     #[test]
     fn backoff_level_saturates_at_the_max() {
-        let d = check_fallback_error(429, None, BACKOFF_MAX_LEVEL);
+        let d = check_fallback_error(429, None, BACKOFF_MAX_LEVEL, None);
         assert_eq!(d.new_backoff_level, Some(BACKOFF_MAX_LEVEL));
         assert_eq!(d.cooldown_ms, BACKOFF_MAX_MS);
     }
@@ -480,7 +522,7 @@ mod tests {
     #[test]
     fn request_scoped_4xx_does_not_cool_the_account() {
         for status in [400, 405, 406, 409, 413, 422] {
-            let d = check_fallback_error(status, None, 0);
+            let d = check_fallback_error(status, None, 0, None);
             assert!(!d.should_fallback, "{status} must not fall back");
             assert_eq!(d.cooldown_ms, 0);
             assert!(d.request_scoped, "{status} is the request's fault");
@@ -490,7 +532,7 @@ mod tests {
     #[test]
     fn account_scoped_4xx_still_falls_back() {
         for status in [401, 402, 403, 429] {
-            let d = check_fallback_error(status, None, 0);
+            let d = check_fallback_error(status, None, 0, None);
             assert!(d.should_fallback, "{status} must fall back");
             assert!(!d.request_scoped, "{status} blames the credential");
         }
@@ -500,14 +542,32 @@ mod tests {
     fn a_matched_rule_is_never_request_scoped() {
         // A text rule wins over the request-scoped fallthrough: this 400 is a
         // rate limit, not the request's fault.
-        let d = check_fallback_error(400, Some(&json!("rate limit reached")), 0);
+        let d = check_fallback_error(400, Some(&json!("rate limit reached")), 0, None);
         assert!(d.should_fallback);
         assert!(!d.request_scoped);
     }
 
     #[test]
+    fn the_degraded_rule_is_scoped_to_nvidia() {
+        // A degraded NIM cluster is a model problem, not a credential problem:
+        // 15 minutes, and the rule only fires for the provider it names.
+        let d = check_fallback_error(400, Some(&json!("cluster degraded")), 0, Some("nvidia"));
+        assert!(d.should_fallback);
+        assert_eq!(d.cooldown_ms, 15 * 60 * 1000);
+
+        // The same wording from another provider stays a request-scoped 400.
+        let d = check_fallback_error(400, Some(&json!("cluster degraded")), 0, Some("mistral"));
+        assert!(!d.should_fallback);
+        assert!(d.request_scoped);
+
+        // `None` names no provider, so a provider-scoped rule never fires.
+        let d = check_fallback_error(400, Some(&json!("degraded")), 0, None);
+        assert!(d.request_scoped);
+    }
+
+    #[test]
     fn unmatched_5xx_gets_the_transient_cooldown() {
-        let d = check_fallback_error(500, None, 0);
+        let d = check_fallback_error(500, None, 0, None);
         assert!(d.should_fallback);
         assert_eq!(d.cooldown_ms, TRANSIENT_COOLDOWN_MS);
         assert_eq!(d.new_backoff_level, None);
@@ -575,7 +635,7 @@ mod tests {
     #[test]
     fn apply_error_state_records_the_backoff_and_the_error() {
         let account = json!({"id": "a", "backoffLevel": 2});
-        let out = apply_error_state(&account, 429, Some(&json!("rate limit")));
+        let out = apply_error_state(&account, 429, Some(&json!("rate limit")), None);
         assert_eq!(out["backoffLevel"], json!(3));
         assert_eq!(out["status"], json!("error"));
         assert_eq!(out["lastError"]["status"], json!(429));
@@ -587,7 +647,7 @@ mod tests {
     fn apply_error_state_on_a_request_scoped_400_clears_the_cooldown() {
         let account =
             json!({"id": "a", "backoffLevel": 2, "rateLimitedUntil": "2030-01-01T00:00:00.000Z"});
-        let out = apply_error_state(&account, 400, Some(&json!("bad body")));
+        let out = apply_error_state(&account, 400, Some(&json!("bad body")), None);
         assert_eq!(out["rateLimitedUntil"], Value::Null);
         assert_eq!(out["backoffLevel"], json!(2));
     }

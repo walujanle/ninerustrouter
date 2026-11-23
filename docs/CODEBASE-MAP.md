@@ -139,7 +139,7 @@ and pricing. Both are edited directly — never duplicate the data in Rust.
 | `src/providers/shared.rs` | Shared provider constants; Anthropic beta-flag selection/merge. | `select_anthropic_beta`, `merge_anthropic_beta`, `ANTHROPIC_API_VERSION` |
 | `src/providers/mod.rs` | Module wiring and public re-exports. | `lookup`, `model`, `normalize`, `registry`, `service`, `shared`, `ui` |
 | `src/catalog/catalog.json` | Committed capability + pricing catalog: defaults, exact/pattern caps, model and pattern pricing. | `defaultCapabilities`, `modelCapabilities`, `patternCapabilities`, `modelPricing`, `patternPricing` |
-| `src/catalog/catalog.rs` | Resolves capabilities, thinking levels and pricing from `catalog.json`, with a synced-catalog hook and cost math. | `get_capabilities_for_model`, `get_pricing_for_model`, `get_thinking_levels`, `calculate_cost_from_tokens`, `aggregate_combo_capabilities`, `CatalogSource` |
+| `src/catalog/catalog.rs` | Resolves capabilities, thinking levels and pricing from `catalog.json`, with a synced-catalog hook and cost math. | `get_capabilities_for_model`, `get_pricing_for_model`, `get_thinking_levels`, `calculate_cost_from_tokens`, `aggregate_combo_capabilities`, `combo_seat_limits`, `CatalogSource` |
 | `src/catalog/mod.rs` | Module wiring and public re-exports. | `Capabilities`, `Pricing`, `CatalogSource` |
 | `src/constants.rs` | Fixed thinking-signature blobs and the Claude Code system prompt, copied verbatim. | `CLAUDE_SYSTEM_PROMPT`, `DEFAULT_THINKING_TEXT`, `DEFAULT_THINKING_*_SIGNATURE` |
 | `src/credentials.rs` | The credential view carried through translation into every executor. | `Credentials`, `Credentials::bearer`, `Credentials::header`, `Credentials::psd_str`, `Credentials::session_scope_id` |

@@ -19,15 +19,25 @@ use crate::error::ApiError;
 use crate::state::AppState;
 
 /// The `caps` projection `/api/models` puts on every row.
+///
+/// `thinkingLevels` is the same selectable set `/v1/models` advertises as
+/// `thinking_levels`, so the dashboard picker and an API client never disagree.
 fn caps_json(provider: &str, model: &str) -> Value {
     let c = get_capabilities_for_model(Some(provider), model);
-    json!({
+    let mut out = json!({
         "vision": c.vision,
         "search": c.search,
         "reasoning": c.reasoning,
         "contextWindow": c.context_window,
         "maxOutput": c.max_output,
-    })
+    });
+    if let Some(levels) = router_sse::catalog::get_thinking_levels(Some(provider), model)
+        && !levels.is_empty()
+        && let Some(obj) = out.as_object_mut()
+    {
+        obj.insert("thinkingLevels".into(), json!(levels));
+    }
+    out
 }
 
 /// `GET /api/models`.

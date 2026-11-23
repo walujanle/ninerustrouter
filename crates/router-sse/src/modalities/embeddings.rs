@@ -19,6 +19,32 @@ use crate::runtime_config::{FETCH_CONNECT_TIMEOUT_MS, http_status};
 /// The providers whose `embeddingConfig` this core serves.
 const SUPPORTED: [&str; 3] = ["mistral", "nvidia", "openrouter"];
 
+/// `INPUT_TYPE_PARAM` — the registry `models[].params` entry NVIDIA's asymmetric
+/// embedding models declare. Without it the upstream answers 400.
+const INPUT_TYPE_PARAM: &str = "input_type";
+/// `INPUT_TYPE_VALUES`: anything else is rejected upstream.
+const INPUT_TYPE_VALUES: [&str; 2] = ["query", "passage"];
+/// `DEFAULT_INPUT_TYPE`: read-time usage is the common case.
+const DEFAULT_INPUT_TYPE: &str = "query";
+
+/// `resolveInputType(declaredParams, clientValue)`: `None` when the model
+/// declares no `input_type`, so every other provider's payload stays
+/// byte-identical.
+fn resolve_input_type(declared: &[String], client_value: Option<&Value>) -> Option<&'static str> {
+    if !declared.iter().any(|p| p == INPUT_TYPE_PARAM) {
+        return None;
+    }
+    let raw = client_value
+        .and_then(Value::as_str)
+        .map(|s| s.trim().to_lowercase())
+        .unwrap_or_default();
+    INPUT_TYPE_VALUES
+        .iter()
+        .find(|v| **v == raw)
+        .copied()
+        .or(Some(DEFAULT_INPUT_TYPE))
+}
+
 /// `handleEmbeddingsCore({body, modelInfo, credentials, ...})`.
 ///
 /// The 401/403 token-refresh-and-retry half lives in the route layer, because
@@ -85,7 +111,18 @@ pub async fn embeddings_core(
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
         .unwrap_or("float");
-    let request_body = build_body(model, input, encoding_format, body.get("dimensions"));
+    let input_type = {
+        let registry = crate::providers::registry::registry();
+        let declared = crate::providers::lookup::model_params(registry.alias_for(provider), model);
+        resolve_input_type(&declared, body.get(INPUT_TYPE_PARAM))
+    };
+    let request_body = build_body(
+        model,
+        input,
+        encoding_format,
+        body.get("dimensions"),
+        input_type,
+    );
 
     let response = ModalityHttp::send(
         "POST",
@@ -136,6 +173,7 @@ fn build_body(
     input: &Value,
     encoding_format: &str,
     dimensions: Option<&Value>,
+    input_type: Option<&str>,
 ) -> Value {
     let mut body = Map::new();
     body.insert("model".into(), json!(model));
@@ -152,6 +190,11 @@ fn build_body(
             crate::translator::concerns::primitives::js_json_number(dim),
         );
     }
+    // Only sent when the model declares it; every other payload stays
+    // byte-identical.
+    if let Some(input_type) = input_type {
+        body.insert(INPUT_TYPE_PARAM.into(), json!(input_type));
+    }
     Value::Object(body)
 }
 
@@ -161,13 +204,13 @@ mod tests {
 
     #[test]
     fn body_carries_encoding_format_and_conditional_dimensions() {
-        let body = build_body("m", &json!("hello"), "float", None);
+        let body = build_body("m", &json!("hello"), "float", None, None);
         assert_eq!(
             body,
             json!({"model": "m", "input": "hello", "encoding_format": "float"})
         );
 
-        let body = build_body("m", &json!(["a", "b"]), "base64", Some(&json!(256)));
+        let body = build_body("m", &json!(["a", "b"]), "base64", Some(&json!(256)), None);
         assert_eq!(
             body,
             json!({"model": "m", "input": ["a", "b"], "encoding_format": "base64", "dimensions": 256})
@@ -175,9 +218,43 @@ mod tests {
 
         // Empty string, zero and negative are all dropped.
         for dim in [json!(""), json!(0), json!(-4), json!(null)] {
-            let body = build_body("m", &json!("x"), "float", Some(&dim));
+            let body = build_body("m", &json!("x"), "float", Some(&dim), None);
             assert!(body.get("dimensions").is_none(), "{dim} must be dropped");
         }
+    }
+
+    #[test]
+    fn input_type_is_resolved_only_when_the_model_declares_it() {
+        let declared = vec!["input_type".to_string()];
+        assert_eq!(resolve_input_type(&declared, None), Some("query"));
+        assert_eq!(
+            resolve_input_type(&declared, Some(&json!(" passage "))),
+            Some("passage")
+        );
+        assert_eq!(
+            resolve_input_type(&declared, Some(&json!("QUERY"))),
+            Some("query")
+        );
+        // Unknown, non-string and empty all fall back to the default.
+        for bad in [json!("document"), json!(42), json!("")] {
+            assert_eq!(resolve_input_type(&declared, Some(&bad)), Some("query"));
+        }
+        // A model that declares nothing never receives the param.
+        assert_eq!(resolve_input_type(&[], Some(&json!("query"))), None);
+        assert_eq!(resolve_input_type(&["dimensions".to_string()], None), None);
+
+        // End to end: the payload gains the key only for a declaring model.
+        let body = build_body("m", &json!("x"), "float", None, Some("passage"));
+        assert_eq!(body["input_type"], json!("passage"));
+    }
+
+    #[test]
+    fn nvidia_asymmetric_models_declare_input_type() {
+        assert!(
+            crate::providers::lookup::model_params("nvidia", "nvidia/nv-embedqa-e5-v5")
+                .iter()
+                .any(|p| p == INPUT_TYPE_PARAM)
+        );
     }
 
     #[tokio::test]

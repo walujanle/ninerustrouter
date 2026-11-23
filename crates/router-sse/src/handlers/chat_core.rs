@@ -550,6 +550,14 @@ pub async fn handle_chat_core(request: ChatCoreRequest<'_>) -> ChatResult {
             if let Some(obj) = translated_body.as_object_mut() {
                 obj.insert("tools".into(), deduped.tools);
             }
+            // A surviving `tool_reference` naming a tool just removed is a 400
+            // on strict Claude-compatible upstreams.
+            if let Some(messages) = translated_body.get_mut("messages") {
+                crate::utils::tool_deduper::clean_stripped_tool_references(
+                    messages,
+                    &deduped.stripped,
+                );
+            }
             if let Some(log) = &log {
                 let preview = deduped
                     .stripped

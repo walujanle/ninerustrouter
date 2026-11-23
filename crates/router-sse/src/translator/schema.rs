@@ -27,6 +27,9 @@ pub mod claude_block {
     pub const DOCUMENT: &str = "document";
     pub const TOOL_USE: &str = "tool_use";
     pub const TOOL_RESULT: &str = "tool_result";
+    /// Claude Code's deferred tool loading: a reference to an already-loaded
+    /// tool, carried inside a `tool_result`.
+    pub const TOOL_REFERENCE: &str = "tool_reference";
     pub const THINKING: &str = "thinking";
     pub const REDACTED_THINKING: &str = "redacted_thinking";
     pub const SERVER_TOOL_USE: &str = "server_tool_use";

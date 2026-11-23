@@ -16,17 +16,21 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use rand::Rng;
+use rand::RngExt;
 use regex::Regex;
 use reqwest::header::HeaderMap;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
+use tokio_util::sync::CancellationToken;
 
 use crate::credentials::Credentials;
 use crate::executors::executor::{
-    ExecError, ExecuteRequest, Executor, UpstreamResponse, insert_header,
+    ExecError, ExecuteRequest, Executor, UpstreamBody, UpstreamResponse, insert_header,
 };
 use crate::providers::lookup::is_muse_spark_model;
 use crate::providers::model::Transport;
@@ -59,6 +63,11 @@ const SESSION_TIME_MASK: u64 = (1 << 36) - 1;
 const MAX_STABLE_SESSIONS: usize = 1000;
 /// How long a stable session survives without use.
 const SESSION_TTL_MS: u64 = crate::runtime_config::memory_config::SESSION_TTL_MS as u64;
+/// Free-lane load shedding: total attempts (first try + retries) and the
+/// backoff. Live bursts last ~20 s, so 800+1600+2400+3200+4000*3 covers it.
+const OPENCODE_OVERLOAD_ATTEMPTS: u32 = 8;
+const OPENCODE_OVERLOAD_BASE_MS: u64 = 800;
+const OPENCODE_OVERLOAD_MAX_MS: u64 = 4000;
 
 /// The canonical session id: `ses_`, 12 hex digits, 14 base62 characters.
 static OPENCODE_SESSION_RE: LazyLock<Regex> =
@@ -329,6 +338,87 @@ pub fn stable_session_id(credentials: &Credentials) -> String {
     }
     store.insert(key, (session.clone(), now));
     session
+}
+
+/// The memoized sessions are never refreshed on failure, so once upstream spends
+/// or flags one every later request reuses it and fails the same way until
+/// restart. Drop the rejected id so the next request mints a fresh one. Matches
+/// by value, not key: a concurrent request may already have minted a replacement,
+/// which must survive.
+pub fn forget_stable_session(session_id: &str) -> bool {
+    if session_id.is_empty() {
+        return false;
+    }
+    let mut store = STABLE_SESSIONS.lock().unwrap_or_else(|e| e.into_inner());
+    let before = store.len();
+    store.retain(|_, (session, _)| session != session_id);
+    store.len() != before
+}
+
+/// A gated free-lane rejection.
+enum Rejection {
+    /// A transient 429 load shed, worth retrying.
+    Overload,
+    /// Any other 429 (`FreeUsageLimitError`) or any 403 — the id itself may be
+    /// spent or flagged.
+    Session,
+    /// Anything else, or a body that cannot be inspected.
+    Other,
+}
+
+/// `classifyRejection(response)`: reads the body so the caller can still hand
+/// the response on — a 429 body is small and a retry discards it anyway, so this
+/// buffers rather than cloning a stream.
+async fn classify_rejection(response: UpstreamResponse) -> (Rejection, UpstreamResponse) {
+    if response.status != 429 {
+        // 403 included: nothing to read, and the caller may still forward it.
+        let kind = if response.status == 403 {
+            Rejection::Session
+        } else {
+            Rejection::Other
+        };
+        return (kind, response);
+    }
+    // A 429 body is small and a retry discards it, so buffer rather than clone a
+    // stream; the rebuilt response still reaches the caller intact.
+    let status = response.status;
+    let headers = response.headers.clone();
+    let url = response.url.clone();
+    let request_headers = response.request_headers.clone();
+    let text = response.text().await.unwrap_or_default();
+    let overload = text.to_ascii_lowercase().contains("overloaded");
+    let rebuilt = UpstreamResponse {
+        status,
+        headers,
+        url,
+        request_headers,
+        body: UpstreamBody::Buffered(Bytes::from(text)),
+    };
+    let kind = if overload {
+        Rejection::Overload
+    } else {
+        Rejection::Session
+    };
+    (kind, rebuilt)
+}
+
+/// `sleep(ms, signal)`: resolves early when the client disconnects, then the
+/// caller surfaces the cancel.
+async fn sleep_abortable(
+    duration: Duration,
+    cancel: Option<&CancellationToken>,
+) -> Result<(), ExecError> {
+    match cancel {
+        Some(token) => tokio::select! {
+            biased;
+            _ = token.cancelled() => Err(ExecError::Cancelled),
+            _ = tokio::time::sleep(duration) => Ok(()),
+        },
+        None => {
+            tokio::time::sleep(duration).await;
+            Ok(())
+        }
+    }
 }
 
 // ─── request shape ───────────────────────────────────────────────────────
@@ -982,9 +1072,65 @@ impl Executor for OpenCodeExecutor {
             req.provider_session_id,
             req.client_tool,
         );
-        LoopRunner(self)
-            .execute(req.with_credentials(&credentials))
-            .await
+
+        // The free lane sheds load with 429 "The inference service is overloaded"
+        // even after the TLS gate passes, and the OpenCode CLI retries it.
+        for attempt in 1..=OPENCODE_OVERLOAD_ATTEMPTS {
+            let result = LoopRunner(self)
+                .execute(ExecuteRequest {
+                    model: req.model,
+                    body: req.body.clone(),
+                    stream: req.stream,
+                    credentials: &credentials,
+                    cancel: req.cancel.clone(),
+                    log: req.log,
+                    proxy_options: req.proxy_options.clone(),
+                    provider_session_id: req.provider_session_id,
+                    client_tool: req.client_tool,
+                })
+                .await?;
+            let (rejection, result) = classify_rejection(result).await;
+            match rejection {
+                Rejection::Session => {
+                    // A client-supplied native session is not ours to replace;
+                    // `forget_stable_session` only drops ids this process minted.
+                    if let Some(session) =
+                        credentials.extra.get(SESSION_FIELD).and_then(Value::as_str)
+                        && forget_stable_session(session)
+                        && let Some(log) = req.log
+                    {
+                        log.debug(
+                            "SESSION",
+                            &format!(
+                                "OpenCode {}: dropped cached session, next request re-mints",
+                                result.status
+                            ),
+                        );
+                    }
+                    return Ok(result);
+                }
+                Rejection::Overload if attempt < OPENCODE_OVERLOAD_ATTEMPTS => {
+                    let backoff = OPENCODE_OVERLOAD_BASE_MS * attempt as u64;
+                    if let Some(log) = req.log {
+                        log.debug(
+                            "RETRY",
+                            &format!(
+                                "OpenCode free lane overloaded, retry {attempt}/{}",
+                                OPENCODE_OVERLOAD_ATTEMPTS - 1
+                            ),
+                        );
+                    }
+                    let jitter = rand::rng().random_range(0..=250u64);
+                    sleep_abortable(
+                        Duration::from_millis(backoff.min(OPENCODE_OVERLOAD_MAX_MS) + jitter),
+                        req.cancel.as_ref(),
+                    )
+                    .await?;
+                }
+                _ => return Ok(result),
+            }
+        }
+        unreachable!("the last attempt returns")
     }
 }
 
@@ -1039,6 +1185,51 @@ mod tests {
         assert_eq!(
             translate_session_id(Some(&format!("  {valid}  ")), ""),
             valid
+        );
+    }
+
+    #[tokio::test]
+    async fn an_overloaded_429_is_retryable_and_a_quota_429_is_not() {
+        let make = |status: u16, body: &str| UpstreamResponse {
+            status,
+            headers: HeaderMap::new(),
+            body: UpstreamBody::Buffered(Bytes::from(body.to_string())),
+            url: String::new(),
+            request_headers: HeaderMap::new(),
+        };
+        let (kind, kept) = classify_rejection(make(
+            429,
+            "The inference service is overloaded. Please try again later.",
+        ))
+        .await;
+        assert!(matches!(kind, Rejection::Overload));
+        // The body is handed back intact for the case where it is not retried.
+        assert!(kept.text().await.unwrap().contains("overloaded"));
+
+        let (kind, _) =
+            classify_rejection(make(429, r#"{"error":{"type":"FreeUsageLimitError"}}"#)).await;
+        assert!(matches!(kind, Rejection::Session));
+
+        // 403 carries no body read and is classified as a session rejection.
+        let (kind, _) = classify_rejection(make(403, "")).await;
+        assert!(matches!(kind, Rejection::Session));
+
+        let (kind, kept) = classify_rejection(make(200, "ok")).await;
+        assert!(matches!(kind, Rejection::Other));
+        assert_eq!(kept.text().await.unwrap(), "ok");
+    }
+
+    #[test]
+    fn a_rejected_session_is_forgotten_so_the_next_request_re_mints() {
+        let credentials = credentials_with("forget-me");
+        let first = stable_session_id(&credentials);
+        assert_eq!(stable_session_id(&credentials), first, "memoized");
+        assert!(forget_stable_session(&first));
+        assert!(!forget_stable_session("ses_000000000000AAAAAAAAAAAAAA"));
+        assert_ne!(
+            stable_session_id(&credentials),
+            first,
+            "a fresh id after the drop"
         );
     }
 

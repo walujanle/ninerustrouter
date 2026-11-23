@@ -1,5 +1,8 @@
 //! Small shared translator helpers.
 
+use std::sync::LazyLock;
+
+use regex::Regex;
 use serde_json::{Map, Value, json};
 
 use crate::translator::schema::{openai_block, role};
@@ -119,6 +122,22 @@ pub fn collapse_text_parts(parts: Value) -> Value {
     parts
 }
 
+/// `stripAnthropicBillingHeader(text)`: drops the leading
+/// `x-anthropic-billing-header:` line, which Claude Code varies per turn
+/// (`cc_workload`, `cc_is_subagent`, client version). Left in place it becomes
+/// ordinary cached prompt text and splits the prompt cache in two; as a
+/// separate `system[0]` block Anthropic ignores it, which is what cloaking
+/// supplies for OAuth. A non-string becomes `""`.
+pub fn strip_anthropic_billing_header(text: &Value) -> String {
+    static HEADER: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new("(?i)^x-anthropic-billing-header:[^\n]*(?:\r?\n)?").expect("static pattern")
+    });
+    let Some(text) = text.as_str() else {
+        return String::new();
+    };
+    HEADER.replace(text, "").to_string()
+}
+
 /// `reasoningDelta(text, withRole)`.
 pub fn reasoning_delta(text: &str, with_role: bool) -> Value {
     let mut delta = Map::new();
@@ -151,6 +170,20 @@ pub fn extract_reasoning_text(delta: &Value) -> String {
                     .or_else(|| d.get("text").and_then(Value::as_str).map(str::to_string))
                     .or_else(|| d.get("content").and_then(Value::as_str).map(str::to_string))
                     .unwrap_or_default()
+            })
+            .collect();
+    }
+    // Mistral streams thinking chunks inside `content`, separately from the
+    // visible text parts.
+    if let Some(parts) = delta.get("content").and_then(Value::as_array) {
+        return parts
+            .iter()
+            .filter(|p| p.get("type").and_then(Value::as_str) == Some("thinking"))
+            .map(|p| {
+                crate::translator::formats::gemini::extract_text_content(
+                    p.get("thinking").unwrap_or(&Value::Null),
+                    "",
+                )
             })
             .collect();
     }
