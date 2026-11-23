@@ -102,6 +102,12 @@ pub fn build_transform_stream(
 
     let options = SseStreamOptions {
         provider: Some(provider.to_string()),
+        reasoning_alias_fields: registry()
+            .transport(provider)
+            .and_then(|t| t.quirks.as_ref())
+            .and_then(|q| q.get("reasoningAliasFields"))
+            .and_then(Value::as_bool)
+            == Some(true),
         tool_name_map,
         custom_tool_names,
         model: model.map(str::to_string),

@@ -677,6 +677,11 @@ async fn handle_single_model_chat_inner(
                     .and_then(Value::as_str)
                     .unwrap_or("full"),
             ),
+            custom_prompt_enabled: settings
+                .get("customPromptEnabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            custom_prompt: settings.get("customPrompt").and_then(Value::as_str),
             source_format_override,
             provider_thinking: provider_thinking.as_ref(),
             proxy_options: proxy_options.clone(),

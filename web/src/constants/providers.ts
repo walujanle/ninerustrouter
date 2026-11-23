@@ -48,7 +48,6 @@ export function isCustomEmbeddingProvider(providerId: unknown): boolean {
 export const AUTH_METHODS = {
 	oauth: { id: "oauth", name: "OAuth" },
 	apikey: { id: "apikey", name: "API Key" },
-	cookie: { id: "cookie", name: "Cookie" },
 };
 
 export function useProviders() {
@@ -101,7 +100,6 @@ export function useProviders() {
 		FREE_TIER_PROVIDERS: store.FREE_TIER_PROVIDERS,
 		OAUTH_PROVIDERS: store.OAUTH_PROVIDERS,
 		APIKEY_PROVIDERS: store.APIKEY_PROVIDERS,
-		WEB_COOKIE_PROVIDERS: store.WEB_COOKIE_PROVIDERS,
 		MEDIA_PROVIDER_KINDS: store.MEDIA_PROVIDER_KINDS,
 		USAGE_SUPPORTED_PROVIDERS: store.USAGE_SUPPORTED_PROVIDERS,
 		USAGE_APIKEY_PROVIDERS: store.USAGE_APIKEY_PROVIDERS,

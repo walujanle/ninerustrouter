@@ -19,9 +19,6 @@ const props = withDefaults(
 		providerName?: string;
 		isCompatible?: boolean;
 		isAnthropic?: boolean;
-		authType?: string;
-		authHint?: string;
-		website?: string;
 		proxyPools?: Array<Record<string, any>>;
 		error?: string;
 		existingNames?: string[];
@@ -31,9 +28,6 @@ const props = withDefaults(
 		providerName: "",
 		isCompatible: false,
 		isAnthropic: false,
-		authType: "",
-		authHint: "",
-		website: "",
 		proxyPools: () => [],
 		error: "",
 		existingNames: () => [],
@@ -48,13 +42,7 @@ const emit = defineEmits<{
 
 const { AI_PROVIDERS } = useProviders();
 
-const isCookie = computed(() => props.authType === "cookie");
-const credentialLabel = computed(() =>
-	isCookie.value ? "Cookie Value" : "API Key",
-);
-const credentialPlaceholder = computed(() =>
-	isCookie.value ? "eyJhbGciOi..." : "",
-);
+const credentialLabel = computed(() => "API Key");
 
 const providerRegions = computed(
 	() => AI_PROVIDERS[props.provider]?.regions || null,
@@ -273,8 +261,7 @@ const canSave = computed(
           <Input
             v-model="formData.apiKey"
             :label="credentialLabel"
-            :type="isCookie ? 'text' : 'password'"
-            :placeholder="credentialPlaceholder"
+            type="password"
             class="flex-1"
           />
           <div class="pt-6">
@@ -283,15 +270,6 @@ const canSave = computed(
             </Button>
           </div>
         </div>
-        <p v-if="isCookie && props.authHint" class="text-xs text-text-muted">
-          {{ props.authHint }}
-          <template v-if="props.website">
-            {{ " " }}
-            <a :href="props.website" target="_blank" rel="noopener noreferrer" class="text-primary underline">
-              Open {{ props.website.replace(/^https?:\/\//, "") }}
-            </a>
-          </template>
-        </p>
         <Select
           v-if="providerRegions"
           v-model="region"

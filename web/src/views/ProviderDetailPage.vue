@@ -48,7 +48,6 @@ const {
 	APIKEY_PROVIDERS,
 	FREE_PROVIDERS,
 	FREE_TIER_PROVIDERS,
-	WEB_COOKIE_PROVIDERS,
 	getProviderAlias,
 } = useProviders();
 const { copied, copy } = useCopyToClipboard();
@@ -120,8 +119,7 @@ const providerInfo = computed(() =>
 		: OAUTH_PROVIDERS[providerId] ||
 			APIKEY_PROVIDERS[providerId] ||
 			FREE_PROVIDERS[providerId] ||
-			FREE_TIER_PROVIDERS[providerId] ||
-			WEB_COOKIE_PROVIDERS[providerId],
+			FREE_TIER_PROVIDERS[providerId],
 );
 
 const authModes = computed(() => providerInfo.value?.authModes || []);
@@ -1607,9 +1605,6 @@ watch(connections, () => {
       :provider-name="providerInfo.name"
       :is-compatible="isCompatible"
       :is-anthropic="isAnthropicCompatible"
-      :auth-type="providerInfo?.authType"
-      :auth-hint="providerInfo?.authHint"
-      :website="providerInfo?.website"
       :proxy-pools="proxyPools"
       :error="addConnectionError"
       :existing-names="connections.map((c) => c.name).filter(Boolean)"

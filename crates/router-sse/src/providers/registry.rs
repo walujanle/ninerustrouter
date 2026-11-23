@@ -285,9 +285,13 @@ mod tests {
     #[test]
     fn parses_the_generated_file() {
         let r = registry();
-        assert_eq!(r.entries().len(), 25);
+        assert_eq!(r.entries().len(), 24);
         assert!(r.get("tinyfish").is_some(), "tinyfish is registered");
         assert!(r.get("poolside").is_none(), "poolside was removed");
+        assert!(
+            r.get("deepseek-web").is_none(),
+            "the browser-session provider is gone"
+        );
         assert!(r.get("deepseek").is_some());
         assert!(r.get("openrouter").is_some());
         assert!(r.get("nous").is_some());

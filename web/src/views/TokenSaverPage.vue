@@ -27,6 +27,8 @@ const cavemanEnabled = ref(false);
 const cavemanLevel = ref("full");
 const ponytailEnabled = ref(false);
 const ponytailLevel = ref("full");
+const customPromptEnabled = ref(false);
+const customPrompt = ref("");
 
 async function patchSetting(patch: Record<string, unknown>): Promise<void> {
 	try {
@@ -73,6 +75,17 @@ function handlePonytailLevel(level: string): void {
 	patchSetting({ ponytailLevel: level });
 }
 
+function handleCustomPromptEnabled(value: boolean): void {
+	customPromptEnabled.value = value;
+	patchSetting({ customPromptEnabled: value });
+}
+
+// Saved on blur, not on every keystroke: a PATCH per character would be one
+// write per character and the textarea is not a form.
+function handleCustomPromptBlur(): void {
+	patchSetting({ customPrompt: customPrompt.value });
+}
+
 onMounted(async () => {
 	try {
 		const res = await fetch("/api/settings");
@@ -83,6 +96,8 @@ onMounted(async () => {
 				cavemanLevel?: string;
 				ponytailEnabled?: boolean;
 				ponytailLevel?: string;
+				customPromptEnabled?: boolean;
+				customPrompt?: string;
 			};
 			rtkEnabled.value = data.rtkEnabled !== false;
 			cavemanEnabled.value = !!data.cavemanEnabled;
@@ -92,6 +107,8 @@ onMounted(async () => {
 				: "full";
 			ponytailEnabled.value = !!data.ponytailEnabled;
 			ponytailLevel.value = data.ponytailLevel || "full";
+			customPromptEnabled.value = !!data.customPromptEnabled;
+			customPrompt.value = data.customPrompt || "";
 		}
 	} catch {
 		// Keep the defaults when settings cannot be loaded.
@@ -221,6 +238,32 @@ onMounted(async () => {
             @update:model-value="handlePonytailEnabled"
           />
         </div>
+      </div>
+      <div class="flex items-center justify-between pt-4 mt-4 border-t border-border gap-4 flex-wrap">
+        <div class="min-w-0 flex-1">
+          <p class="font-medium">Custom system prompt</p>
+          <p class="text-sm text-text-muted">
+            Appends your own instruction to every request, independently of the savers above
+          </p>
+        </div>
+        <Toggle
+          :model-value="customPromptEnabled"
+          @update:model-value="handleCustomPromptEnabled"
+        />
+      </div>
+      <div v-if="customPromptEnabled" class="pt-3">
+        <label for="custom-prompt" class="sr-only">Custom system prompt</label>
+        <textarea
+          id="custom-prompt"
+          v-model="customPrompt"
+          rows="4"
+          placeholder="e.g. Prefer editing existing files over creating new ones."
+          class="w-full rounded border border-border bg-transparent p-2 text-xs text-text-main focus:ring-1 focus:ring-primary/30 focus:border-primary/50 focus:outline-none"
+          @blur="handleCustomPromptBlur"
+        />
+        <p class="text-xs text-text-muted mt-1">
+          Applied to every provider and model. Sent as-is to upstream; an empty prompt injects nothing.
+        </p>
       </div>
     </Card>
   </div>

@@ -10,7 +10,6 @@
 
 pub mod codex;
 pub mod commandcode;
-pub mod deepseek_web;
 pub mod default;
 pub mod executor;
 pub mod http;
@@ -28,7 +27,6 @@ use dashmap::DashMap;
 
 use crate::executors::codex::CodexExecutor;
 use crate::executors::commandcode::CommandCodeExecutor;
-use crate::executors::deepseek_web::DeepSeekWebExecutor;
 use crate::executors::default::DefaultExecutor;
 use crate::executors::executor::Executor;
 use crate::executors::opencode::OpenCodeExecutor;
@@ -46,7 +44,6 @@ static SPECIAL: LazyLock<HashMap<&'static str, ExecutorBuilder>> = LazyLock::new
     map.insert("opencode", || Arc::new(OpenCodeExecutor::new()));
     map.insert("opencode-go", || Arc::new(OpenCodeGoExecutor::new()));
     map.insert("codebuddy-intl", || Arc::new(CodeBuddyIntlExecutor::new()));
-    map.insert("deepseek-web", || Arc::new(DeepSeekWebExecutor::new()));
     map
 });
 
@@ -114,7 +111,6 @@ mod tests {
             "opencode",
             "opencode-go",
             "codebuddy-intl",
-            "deepseek-web",
         ] {
             assert!(
                 has_specialized_executor(provider),

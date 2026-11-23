@@ -25,6 +25,10 @@ const passLoading = ref(false);
 const dbLoading = ref(false);
 const dbStatus = ref<Status>({ type: "", message: "" });
 const dbAuth = ref({ open: false, mode: "", password: "" });
+// Providers with a stored API key, offered by the scoped backup. OAuth and
+// session connections carry no key to export.
+const exportableProviders = ref<Array<{ id: string; count: number }>>([]);
+const exportSelection = ref<string[]>([]);
 const pendingImportRef = ref<File | null>(null);
 const importFileRef = ref<HTMLInputElement | null>(null);
 const proxyForm = ref({
@@ -312,6 +316,74 @@ async function reloadSettings(): Promise<void> {
 	}
 }
 
+// Providers that hold at least one API-key connection on this install.
+async function loadExportableProviders(): Promise<void> {
+	try {
+		const res = await fetch("/api/providers");
+		if (!res.ok) return;
+		const data = await res.json();
+		const counts: Record<string, number> = {};
+		for (const conn of data.connections || []) {
+			if (conn.authType === "apikey" && conn.provider) {
+				counts[conn.provider] = (counts[conn.provider] || 0) + 1;
+			}
+		}
+		exportableProviders.value = Object.entries(counts)
+			.map(([id, count]) => ({ id, count }))
+			.sort((a, b) => a.id.localeCompare(b.id));
+	} catch {
+		exportableProviders.value = [];
+	}
+}
+
+function openScopedExport(): void {
+	loadExportableProviders();
+	exportSelection.value = [];
+	dbAuth.value = { open: true, mode: "export-scoped", password: "" };
+}
+
+function downloadJson(payload: unknown, kind: string): void {
+	const content = JSON.stringify(payload, null, 2);
+	const blob = new Blob([content], { type: "application/json" });
+	const url = URL.createObjectURL(blob);
+	const anchor = document.createElement("a");
+	const stamp = new Date().toISOString().replace(/[.:]/g, "-");
+	anchor.href = url;
+	anchor.download = `ninerustrouter-${kind}-${stamp}.json`;
+	document.body.appendChild(anchor);
+	anchor.click();
+	document.body.removeChild(anchor);
+	URL.revokeObjectURL(url);
+}
+
+async function handleExportProviders(password: string): Promise<void> {
+	dbLoading.value = true;
+	dbStatus.value = { type: "", message: "" };
+	try {
+		const query = exportSelection.value.join(",");
+		const res = await fetch(
+			`/api/settings/database?providers=${encodeURIComponent(query)}`,
+			{ headers: { "x-9r-password": password } },
+		);
+		if (!res.ok) {
+			const data = await res.json().catch(() => ({}));
+			throw new Error(data.error || "Failed to export providers");
+		}
+		downloadJson(await res.json(), "providers");
+		dbStatus.value = {
+			type: "success",
+			message: `Backup of ${exportSelection.value.length} provider(s) downloaded`,
+		};
+	} catch (err) {
+		dbStatus.value = {
+			type: "error",
+			message: (err as Error).message || "Failed to export providers",
+		};
+	} finally {
+		dbLoading.value = false;
+	}
+}
+
 async function handleExportDatabase(password: string): Promise<void> {
 	dbLoading.value = true;
 	dbStatus.value = { type: "", message: "" };
@@ -324,19 +396,7 @@ async function handleExportDatabase(password: string): Promise<void> {
 			throw new Error(data.error || "Failed to export database");
 		}
 
-		const payload = await res.json();
-		const content = JSON.stringify(payload, null, 2);
-		const blob = new Blob([content], { type: "application/json" });
-		const url = URL.createObjectURL(blob);
-		const anchor = document.createElement("a");
-		const stamp = new Date().toISOString().replace(/[.:]/g, "-");
-		anchor.href = url;
-		anchor.download = `ninerustrouter-backup-${stamp}.json`;
-		document.body.appendChild(anchor);
-		anchor.click();
-		document.body.removeChild(anchor);
-		URL.revokeObjectURL(url);
-
+		downloadJson(await res.json(), "backup");
 		dbStatus.value = { type: "success", message: "Database backup downloaded" };
 	} catch (err) {
 		dbStatus.value = { type: "error", message: (err as Error).message || "Failed to export database" };
@@ -388,6 +448,7 @@ async function handleDbAuthConfirm(): Promise<void> {
 	const { mode, password } = dbAuth.value;
 	dbAuth.value = { open: false, mode: "", password: "" };
 	if (mode === "export") await handleExportDatabase(password);
+	else if (mode === "export-scoped") await handleExportProviders(password);
 	else if (mode === "import") await runImportDatabase(password);
 }
 
@@ -469,6 +530,15 @@ async function handleLogout(): Promise<void> {
               @click="dbAuth = { open: true, mode: 'export', password: '' }"
             >
               Download Backup
+            </Button>
+            <Button
+              variant="outline"
+              icon="key"
+              :disabled="dbLoading"
+              class-name="w-full sm:w-auto"
+              @click="openScopedExport"
+            >
+              Export Provider Keys
             </Button>
             <Button
               variant="outline"
@@ -826,8 +896,36 @@ async function handleLogout(): Promise<void> {
       @close="dbAuth = { open: false, mode: '', password: '' }"
     >
       <p class="text-text-muted mb-3 text-sm">
-        Enter your current password to {{ dbAuth.mode === "export" ? "export" : "import" }} the database.
+        Enter your current password to
+        {{ dbAuth.mode === "import" ? "import" : "export" }}
+        {{ dbAuth.mode === "export-scoped" ? "the selected provider keys" : "the database" }}.
       </p>
+      <div v-if="dbAuth.mode === 'export-scoped'" class="mb-3">
+        <p v-if="exportableProviders.length === 0" class="text-sm text-text-muted">
+          No provider has an API key stored yet.
+        </p>
+        <fieldset v-else class="flex flex-col gap-1 max-h-56 overflow-y-auto">
+          <legend class="text-sm font-medium text-text-main mb-1">Providers to include</legend>
+          <label
+            v-for="p in exportableProviders"
+            :key="p.id"
+            class="flex items-center gap-2 text-sm text-text-main"
+          >
+            <input
+              type="checkbox"
+              :value="p.id"
+              :checked="exportSelection.includes(p.id)"
+              @change="
+                exportSelection = exportSelection.includes(p.id)
+                  ? exportSelection.filter((x) => x !== p.id)
+                  : [...exportSelection, p.id]
+              "
+            />
+            <span class="font-mono">{{ p.id }}</span>
+            <span class="text-text-muted">({{ p.count }} key{{ p.count === 1 ? "" : "s" }})</span>
+          </label>
+        </fieldset>
+      </div>
       <Input
         type="password"
         :model-value="dbAuth.password"
@@ -846,7 +944,9 @@ async function handleLogout(): Promise<void> {
         <Button
           variant="primary"
           :loading="dbLoading"
-          :disabled="!dbAuth.password"
+          :disabled="
+            !dbAuth.password || (dbAuth.mode === 'export-scoped' && exportSelection.length === 0)
+          "
           @click="handleDbAuthConfirm"
         >
           Confirm

@@ -111,11 +111,11 @@ Six views carry most of the frontend complexity; budget accordingly before touch
 
 ## Client-side constants coupling
 
-The provider registry is served once by `GET /api/registry` and installed into `useRegistryStore` at boot, before the router mounts. The payload is `providers` (five category maps: `free`, `freeTier`, `oauth`, `apikey`, `webCookie`), `mediaProviderKinds`, `usageSupportedProviders`, `usageApikeyProviders`, `providerModels` and `providerIdToAlias`. Every consumer reads those tables synchronously off the store: `src/constants/providers.ts` and `src/constants/models.ts` are thin accessors over it, and there is no compile-time copy client-side. The store is the single source of truth for provider lists, model lists and aliases — add a field to the registry response, not to a client constant.
+The provider registry is served once by `GET /api/registry` and installed into `useRegistryStore` at boot, before the router mounts. The payload is `providers` (four category maps: `free`, `freeTier`, `oauth`, `apikey`), `mediaProviderKinds`, `usageSupportedProviders`, `usageApikeyProviders`, `providerModels` and `providerIdToAlias`. Every consumer reads those tables synchronously off the store: `src/constants/providers.ts` and `src/constants/models.ts` are thin accessors over it, and there is no compile-time copy client-side. The store is the single source of truth for provider lists, model lists and aliases — add a field to the registry response, not to a client constant.
 
-`ProvidersPage` renders one section per category that has entries — OAuth, Free Tier, Browser
-Session (`webCookie`), and API Key. A category the page does not render is a provider no user
-can reach, so adding a `webCookie` provider means the Browser Session section has to exist.
+`ProvidersPage` renders one section per category that has entries — Free, Free Tier, OAuth and API
+Key. A category the page does not render is a provider no user can reach, so a new category needs a
+section here before a provider can use it.
 
 Model capabilities (vision / reasoning / context window) come from a separate `GET /api/models` fetch shared by every `useModelCaps` instance (`src/hooks/useModelCaps.ts`). Custom models change at runtime, so that fetch drops its cache and refetches on the `customModelChanged` event.
 
@@ -135,7 +135,7 @@ Client-side route guards are cosmetic. The Rust backend owns the 401 and the red
 
 ## Static assets
 
-`web/public/` holds `favicon.svg`, `icons/` (PWA icons), `fonts/` (self-hosted Geist and JetBrains Mono) and a `providers/` tree of 30 PNGs — one per shipped provider except `deepseek-web`, plus the shared refs `claude`, `codex`, `hermes`, `ollama` and the compatibility badges `oai-r`, `oai-cc`, `anthropic-m`. A provider with no PNG is not a bug: `providerIcon.ts` caches the 404 and `ProviderIcon.vue` renders an initial badge, so `deepseek-web` and any provider added later still render.
+`web/public/` holds `favicon.svg`, `icons/` (PWA icons), `fonts/` (self-hosted Geist and JetBrains Mono) and a `providers/` tree of PNGs — one per shipped provider, plus the shared refs `claude`, `codex`, `hermes`, `ollama` and the compatibility badges `oai-r`, `oai-cc`, `anthropic-m`. A provider with no PNG is not a bug: `providerIcon.ts` caches the 404 and `ProviderIcon.vue` renders an initial badge, so a provider added later still renders.
 
 **The logo is four files and they are not interchangeable.** `src/assets/logo.svg` is the master mark (512 box, transparent, gradient). `icons/icon-192.svg` and `icon-512.svg` carry the same geometry on a `#0a0a0a` badge. `favicon.svg` is a deliberate small-size variant: the terminal dots are dropped and the stroke thickened, because at 16px the dots fill the fork's counters and the mark renders as a solid blob. `components/BrandMark.vue` is the inline, `currentColor` copy used by the sidebar, the landing nav/footer/flow animation and the how-it-works step, so it takes the colour of whatever tile it sits in. There is no `<text>` in any of them — a font glyph renders differently per platform. Do not "sync" the favicon to the master; that re-breaks the 16px render.
 

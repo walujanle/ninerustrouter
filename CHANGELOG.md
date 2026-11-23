@@ -5,6 +5,32 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- Token saver: a custom system prompt, with its own toggle and text, appended to
+  every request independently of RTK, Caveman and Ponytail.
+- A scoped backup: export only the providers you pick, and only their API-key
+  connections, with the same password gate as the full database backup.
+
+### Removed
+
+- The `deepseek-web` provider and the browser-session (`webCookie`) provider
+  category. Neither is reachable from the dashboard any more, and a connection
+  row left over from one is inert.
+
+### Fixed
+
+- OpenCode Free's reasoning alias (`reasoning` / `reasoning_details[]`) is
+  lifted into `reasoning_content` on the passthrough stream, so thinking reaches
+  an OpenAI-shaped client instead of being dropped.
+- OpenCode Go's DeepSeek models keep their thinking block on a tool-use turn
+  whatever the thinking wire shape, so the Messages transport stops rejecting
+  the pass-back.
+- Codex reports itself as CLI 0.167.1 and Command Code as 1.88.5, so the
+  upstream backends keep accepting the client identity.
+- NVIDIA NIM gets its 90 s timeout and drops client metadata, which it rejects
+  with a 400.
+
 ## [0.1.6] - 2026-11-23
 
 ### Added

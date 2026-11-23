@@ -5,7 +5,7 @@
 //! `Cache-Control: no-store`.
 
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Map, Value, json};
@@ -194,7 +194,15 @@ fn is_cli_request(headers: &HeaderMap) -> bool {
 }
 
 /// `GET /api/settings/database`: export, gated by CLI token or the password.
-pub async fn database_export(State(state): State<AppState>, headers: HeaderMap) -> Response {
+///
+/// `?providers=a,b` narrows the backup to the API-key connections of those
+/// providers, so a user can carry one provider's keys without holding a copy
+/// of every credential in the database.
+pub async fn database_export(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<ExportQuery>,
+) -> Response {
     if !is_cli_request(&headers)
         && !password_ok(
             &state,
@@ -203,10 +211,36 @@ pub async fn database_export(State(state): State<AppState>, headers: HeaderMap) 
     {
         return ApiError::unauthorized("Invalid password").into_response();
     }
-    match state.read(router_db::export::export_db).await {
+
+    let providers: Vec<String> = query
+        .providers
+        .as_deref()
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(str::to_string)
+        .collect();
+    let payload = if providers.is_empty() {
+        state.read(router_db::export::export_db).await
+    } else {
+        state
+            .read(move |conn| {
+                let names: Vec<&str> = providers.iter().map(String::as_str).collect();
+                router_db::export::export_db_scoped(conn, &names)
+            })
+            .await
+    };
+    match payload {
         Ok(payload) => Json(payload).into_response(),
         Err(_) => ApiError::internal("Failed to export database").into_response(),
     }
+}
+
+/// The `?providers=` selector on an export.
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct ExportQuery {
+    pub providers: Option<String>,
 }
 
 /// `POST /api/settings/database`: import, gated the same way.

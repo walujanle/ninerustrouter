@@ -39,11 +39,8 @@ function handleChange(field: string, value: unknown) {
 	}
 }
 
-// The credential field serves both keyed auth methods; the backend stores a
-// cookie value through the same `apiKey` field.
-const needsCredential = computed(
-	() => formData.authMethod === "apikey" || formData.authMethod === "cookie",
-);
+// The credential field serves the only keyed auth method left.
+const needsCredential = computed(() => formData.authMethod === "apikey");
 
 function validate(): boolean {
 	const newErrors: Record<string, string> = {};
@@ -148,7 +145,7 @@ const selectedProvider = computed(() => AI_PROVIDERS[formData.provider]);
               @click="handleChange('authMethod', method.value)"
             >
               <span class="material-symbols-outlined">
-                {{ method.value === "apikey" ? "key" : method.value === "cookie" ? "cookie" : "lock" }}
+                {{ method.value === "apikey" ? "key" : "lock" }}
               </span>
               <span class="font-medium">{{ method.label }}</span>
             </button>
@@ -159,11 +156,11 @@ const selectedProvider = computed(() => AI_PROVIDERS[formData.provider]);
         <Input
           v-if="needsCredential"
           v-model="formData.apiKey"
-          :label="formData.authMethod === 'cookie' ? 'Cookie' : 'API Key'"
+          :label="'API Key'"
           type="password"
-          :placeholder="formData.authMethod === 'cookie' ? 'Enter your cookie value' : 'Enter your API key'"
+          :placeholder="'Enter your API key'"
           :error="errors.apiKey || undefined"
-          :hint="formData.authMethod === 'cookie' ? 'Your cookie value will be encrypted and stored securely.' : 'Your API key will be encrypted and stored securely.'"
+          :hint="'Your API key will be encrypted and stored securely.'"
           required
         />
 

@@ -66,12 +66,11 @@ Where a function only has to agree with an implementation outside this repo, the
 test pins vectors produced by that implementation rather than by a second copy of
 the same logic here.
 
-The DeepSeek proof-of-work is the case that needed it:
-`executors/deepseek_web/pow.rs` is a port of upstream's `deepseek-pow-hash.js`, and
-the two agreed only by construction. Five digests and five solved nonces were
-generated from upstream's own `findDeepSeekPowNonce` and are asserted in
-`pow::tests`. The first port was wrong — the theta step dropped the low word's
-carry — and the vectors caught it before a live request could.
+The case that motivated the rule was the DeepSeek browser-session proof-of-work,
+a port of upstream's `deepseek-pow-hash.js` whose digests were generated from
+upstream's own solver. That provider and its executor were removed along with the
+`webCookie` category, so the vectors went with them; the rule stands for any
+future port of an external algorithm.
 
 A vector test earns its place only when the reference is genuinely external. Two
 copies of the same Rust function prove nothing about either.

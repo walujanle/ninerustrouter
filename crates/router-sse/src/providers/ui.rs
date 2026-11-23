@@ -135,10 +135,13 @@ pub fn providers_by_category(category: &str) -> Map<String, Value> {
     out
 }
 
-/// The five category maps, keyed by the constant name the frontend uses.
+/// The four category maps, keyed by the constant name the frontend uses.
+///
+/// `webCookie` is absent: the browser-session providers it held are gone, and a
+/// map with no entry behind it is a section the page would render empty.
 pub fn provider_categories() -> Map<String, Value> {
     let mut out = Map::new();
-    for cat in ["free", "freeTier", "oauth", "apikey", "webCookie"] {
+    for cat in ["free", "freeTier", "oauth", "apikey"] {
         out.insert(cat.to_string(), Value::Object(providers_by_category(cat)));
     }
     out
@@ -282,7 +285,7 @@ mod tests {
     #[test]
     fn categories_partition_the_registry() {
         let cats = provider_categories();
-        let total: usize = ["free", "freeTier", "oauth", "apikey", "webCookie"]
+        let total: usize = ["free", "freeTier", "oauth", "apikey"]
             .into_iter()
             .map(|c| cats[c].as_object().unwrap().len())
             .sum();

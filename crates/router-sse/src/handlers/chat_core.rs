@@ -241,6 +241,8 @@ pub struct ChatCoreRequest<'a> {
     pub caveman_level: Option<&'a str>,
     pub ponytail_enabled: bool,
     pub ponytail_level: Option<&'a str>,
+    pub custom_prompt_enabled: bool,
+    pub custom_prompt: Option<&'a str>,
     /// `detectFormatByEndpoint` result, when the caller resolved one.
     pub source_format_override: Option<&'a str>,
     pub provider_thinking: Option<&'a Value>,
@@ -296,6 +298,8 @@ pub async fn handle_chat_core(request: ChatCoreRequest<'_>) -> ChatResult {
         caveman_level,
         ponytail_enabled,
         ponytail_level,
+        custom_prompt_enabled,
+        custom_prompt,
         source_format_override,
         provider_thinking,
         proxy_options,
@@ -667,6 +671,14 @@ pub async fn handle_chat_core(request: ChatCoreRequest<'_>) -> ChatResult {
     {
         inject_ponytail(&mut translated_body, final_format, level);
         xf.push(format!("PONYTAIL:{level}"));
+    }
+    // Independent of the savers: its own toggle and text. Blank text is a
+    // no-op rather than an empty system message.
+    if custom_prompt_enabled
+        && let Some(prompt) = custom_prompt
+        && crate::rtk::inject_custom_prompt(&mut translated_body, final_format, prompt)
+    {
+        xf.push(format!("CUSTOMPROMPT:{}c", prompt.trim().len()));
     }
     if !xf.is_empty()
         && let Some(log) = &log

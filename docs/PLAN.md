@@ -115,7 +115,7 @@ The guard fails closed. `/systemone` is listed among the public LLM prefixes so 
 
 **Translators are data, not traits.** The registry is `HashMap<(Format, Format), TranslatorFn>` built once into a `LazyLock` (`crates/router-sse/src/translator/mod.rs`). Registration is one explicit `register_all` called by the registry constructor, so a pair cannot be lost by a missing side-effecting import. Direct routes keep their exact-pair lookup so the lossy OpenAI pivot is skipped where it is not needed. Trait objects are the wrong shape for pure functions.
 
-**Executors are traits.** `trait Executor` behind `Arc<dyn Executor>` in a `HashMap<&str, Arc<dyn Executor>>` (`crates/router-sse/src/executors/mod.rs`). The special executors are codex, commandcode, opencode, opencode-go, codebuddy-intl and deepseek-web; every other provider resolves to a cached `DefaultExecutor` that covers the OpenAI-compatible ones.
+**Executors are traits.** `trait Executor` behind `Arc<dyn Executor>` in a `HashMap<&str, Arc<dyn Executor>>` (`crates/router-sse/src/executors/mod.rs`). The special executors are codex, commandcode, opencode, opencode-go and codebuddy-intl; every other provider resolves to a cached `DefaultExecutor` that covers the OpenAI-compatible ones.
 
 **`serde_json::Value` is the hub format.** Formats are lossy, provider-shaped and mutated in place; typed structs would mean one struct per format plus every provider quirk, and unknown-field passthrough is required. Type only the binary boundaries.
 

@@ -248,7 +248,9 @@ The boot sequence is `migrate_on_boot` in `crates/router-db/src/migrations.rs`: 
 
 ## Export / import
 
-`export_db` / `import_db` (`crates/router-db/src/export.rs`) wipes tables except `_meta` and re-inserts. Route-level: password re-auth (`x-9r-password`) or CLI token (`x-9r-cli-token`) on `GET`/`POST /api/settings/database`. `PROTECTED_SETTING_KEYS = ["password", "mitmSudoEncrypted"]`; `GET /api/settings` strips `password` and `oidcClientSecret` and adds `oidcConfigured`, `hasPassword`.
+`export_db` / `import_db` (`crates/router-db/src/export.rs`) wipes the tables the payload names, except `_meta`, and re-inserts. Route-level: password re-auth (`x-9r-password`) or CLI token (`x-9r-cli-token`) on `GET`/`POST /api/settings/database`.
+
+**Scoped export.** `GET /api/settings/database?providers=a,b` returns `export_db_scoped`: a `scope` object plus only the `providerConnections` whose provider is named and whose `authType` is `apikey`. OAuth rows and every other section are omitted, so the file carries one provider's keys and nothing else. On import, a payload with a scope deletes only the `apikey` connection rows of the providers it names before re-inserting, so restoring a scoped file leaves other providers, OAuth connections and every unmentioned table alone. `PROTECTED_SETTING_KEYS = ["password", "mitmSudoEncrypted"]`; `GET /api/settings` strips `password` and `oidcClientSecret` and adds `oidcConfigured`, `hasPassword`.
 
 **Per-key access control.** `accessRestricted` / `accessAllow` are the only
 columns added since v1. They are additive, so `sync_schema_from_tables` adds them
@@ -259,7 +261,7 @@ actor on both sides; adding a ninerustrouter migration here would stamp a versio
 9router never writes. `export_db` / `import_db` carry the pair, because an
 import that dropped them would silently widen a restricted key.
 
-**What `import_db` actually clears.** The wipe is six tables — `settings`, `providerConnections`, `providerNodes`, `proxyPools`, `apiKeys`, `combos` — plus `kv` rows in the `modelAliases`, `customModels`, `mitmAlias` and `pricing` scopes. `usageHistory`, `usageDaily`, `requestDetails` and the `disabledModels` scope are not touched, and `export_db` never emits them, so the payload carries configuration only and an import replaces configuration while leaving usage and disabled-model state in place. Only a literal JSON `false` in `isActive` deactivates a row on import; `null`, a missing key, `0` and `""` all import as active. `combos.models` goes through `JSON.stringify(models || [])`, so any falsy value becomes `[]`. `export_db` spreads each row's `data` blob first and then overlays the fixed columns, so a column always wins over a same-named key in the blob and the payload's key order is the order the dashboard sees.
+**What `import_db` actually clears.** For a full backup the wipe is six tables — `settings`, `providerConnections`, `providerNodes`, `proxyPools`, `apiKeys`, `combos` — plus `kv` rows in the `modelAliases`, `customModels`, `mitmAlias` and `pricing` scopes. A section the payload omits is skipped entirely, so a scoped file touches only what it carries. `usageHistory`, `usageDaily`, `requestDetails` and the `disabledModels` scope are not touched, and `export_db` never emits them, so the payload carries configuration only and an import replaces configuration while leaving usage and disabled-model state in place. Only a literal JSON `false` in `isActive` deactivates a row on import; `null`, a missing key, `0` and `""` all import as active. `combos.models` goes through `JSON.stringify(models || [])`, so any falsy value becomes `[]`. `export_db` spreads each row's `data` blob first and then overlays the fixed columns, so a column always wins over a same-named key in the blob and the payload's key order is the order the dashboard sees.
 
 ## Driver chain
 

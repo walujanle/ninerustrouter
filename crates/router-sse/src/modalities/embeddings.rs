@@ -251,7 +251,7 @@ mod tests {
     #[test]
     fn nvidia_asymmetric_models_declare_input_type() {
         assert!(
-            crate::providers::lookup::model_params("nvidia", "nvidia/nv-embedqa-e5-v5")
+            crate::providers::lookup::model_params("nvidia", "nvidia/nemotron-3.5-embed-8b")
                 .iter()
                 .any(|p| p == INPUT_TYPE_PARAM)
         );

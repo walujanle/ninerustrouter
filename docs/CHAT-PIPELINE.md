@@ -81,9 +81,9 @@ state struct does not need editing for every new translator.
 ## Executors
 
 `executors/mod.rs` holds the special-executor map: `Arc<dyn Executor>` entries for the providers that
-need custom code — `codex`, `commandcode`, `opencode`, `opencode-go`, `codebuddy-intl` and
-`deepseek-web`. `get_executor` falls back to a per-provider
-cached `DefaultExecutor`, which serves every OpenAI-compatible provider.
+need custom code — `codex`, `commandcode`, `opencode`, `opencode-go` and `codebuddy-intl`.
+`get_executor` falls back to a per-provider cached `DefaultExecutor`, which serves every
+OpenAI-compatible provider.
 
 The `Executor` trait's default methods provide the URL fallback loop, per-status retry with backoff,
 connect-timeout abort, and the `should_retry` / `parse_error` / `refresh_credentials` /
@@ -123,19 +123,6 @@ The hook runs **before** auth, which matters: a hook that ran after would be fre
 bearer token. Adding a hook means adding a match arm *and* the registry key — a registry `hooks`
 entry with no arm is a silent no-op.
 
-**`deepseek-web` is a browser-session provider with a proof-of-work gate.** chat.deepseek.com's web
-API takes a flat `prompt` string guarded by an `X-Ds-Pow-Response` header, so `DeepSeekWebExecutor`
-overrides `execute` end to end rather than any one hook: `userToken` to access token
-(`/api/v0/users/current`), then chat session (`/chat_session/create`), then PoW challenge
-(`/chat/create_pow_challenge`), then completion. Both the access token and the session are cached by
-`userToken`, and the session cache is skipped unless the connection sets `persistSession`.
-
-The PoW is DeepSeekHashV1 — SHA3-256 with round 0 of the Keccak-p[1600] permutation skipped, so 23
-rounds where FIPS-202 uses 24. `executors/deepseek_web/pow.rs` hand-ports the permutation because no
-crate in the tree exposes a configurable round count. The solver walks `0..difficulty` and returns
-`None` when the space is exhausted; difficulty is validated against upstream's own ceiling
-(`MAX_DEEPSEEK_POW_DIFFICULTY`, 250000) before the solve.
-
 **`DefaultExecutor` builds every outbound client through `http::tls_builder`.** A `reqwest` client
 built directly would take reqwest's default verifier, which panics on Termux (see `RUNTIME.md`).
 The same applies to credential-refresh and OAuth calls: those are bounded (a 30 s budget for OAuth,
@@ -159,6 +146,13 @@ every chunk; `decode` separately allocated a `String` that was appended to that 
 the buffer out, borrows each complete line in place, and drains what it consumed, leaving only the
 partial tail. The splitter's behaviour is pinned by a test that feeds the same frame at every
 possible chunk boundary, which is the only honest way to prove an in-place rewrite is equivalent.
+
+**A lane that thinks in the OpenRouter aliases needs a lift, and it is opt-in.** OpenCode Free's
+MiMo route streams thinking as `reasoning` and `reasoning_details[]`, not `reasoning_content`, and
+the response pipeline and usage accounting only read `reasoning_content`. The registry's
+`quirks.reasoningAliasFields` turns on a passthrough lift that adds `reasoning_content` to a delta
+carrying an alias, without touching the alias itself so a client that reads it still sees it. The
+lift only ever adds: a delta already carrying `reasoning_content` is left alone.
 
 **The stall watchdog must be tied to raw upstream bytes, not transform output.** If no upstream byte
 arrives within `stall_timeout_ms`, the stream is dead. Watching the transform output instead makes a
@@ -271,7 +265,6 @@ changing a translator:
 | An `input_audio` part has no conversion arm | `translator/request/openai_to_claude.rs` |
 | A Responses `function_call` with an empty name is skipped, which can leave an assistant turn with `tool_calls: []` | `translator/request/openai_responses.rs` |
 | A Responses `input_image` falls back to using `file_id` as the image URL | `translator/request/openai_responses.rs` |
-| `deepseek-web` does not translate tool calls; a request carrying `tools[]` is refused with an explicit `400` | `executors/deepseek_web/mod.rs` |
 
 **Changing one of these is a behaviour change, not a cleanup.** Give it its own changelog entry and a
 test that pins the new output, so a future reader can tell an intentional fix from a regression.
@@ -344,6 +337,12 @@ hook.
   (`is_error`), so error traces survive.
 - **Caveman**: level from `cavemanLevel`; `lite` / `full` / `ultra`.
 - **Ponytail**: level from `ponytailLevel`; `lite` / `full` / `ultra`.
+- **Custom system prompt**: `customPromptEnabled` + `customPrompt`. Independent of the three savers
+  above — its own toggle and text, appended to the same system slot — so it works with all of them
+  off. Blank text is a no-op rather than an empty system message. The `⚙` line reports it as
+  `CUSTOMPROMPT:<chars>c`.
+
+A request that carries `x-9router-token-saver: off` skips the whole block.
 
 ## CLI fingerprint headers
 

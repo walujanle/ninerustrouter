@@ -44,7 +44,6 @@ const {
 	FREE_PROVIDERS,
 	FREE_TIER_PROVIDERS,
 	APIKEY_PROVIDERS,
-	WEB_COOKIE_PROVIDERS,
 } = useProviders();
 
 const connections = ref<Array<Record<string, any>>>([]);
@@ -366,25 +365,6 @@ const apikeyEntries = computed(() =>
 		}),
 );
 
-// Browser-session providers: the credential is a cookie or token lifted from
-// the vendor's own web app, not an API key. Same card, its own section so the
-// cookie wording is not mistaken for a key.
-const webCookieEntries = computed(() =>
-	Object.entries(WEB_COOKIE_PROVIDERS)
-		.filter(
-			([key, info]) =>
-				!info.hidden &&
-				matchSearch(info.name) &&
-				matchStatus(getProviderStats(key, dualAuthTypes(info, key)), info.noAuth),
-		)
-		.sort(([ka, a], [kb, b]) => {
-			const ca = getProviderStats(ka, dualAuthTypes(a, ka)).connected > 0 ? 0 : 1;
-			const cb = getProviderStats(kb, dualAuthTypes(b, kb)).connected > 0 ? 0 : 1;
-			if (ca !== cb) return ca - cb;
-			return (a.name || "").localeCompare(b.name || "");
-		}),
-);
-
 const isApikeySearching = computed(
 	() => !!searchQuery.value.trim() || statusFilter.value !== "all",
 );
@@ -574,25 +554,6 @@ const testModeLabel = computed(() => {
           :provider="info"
           :stats="getProviderStats(key, dualAuthTypes(info, key))"
           api-key
-          @toggle="(active: boolean) => handleToggleProvider(key, dualAuthTypes(info, key), active)"
-        />
-      </div>
-    </div>
-
-    <!-- Browser Session Providers -->
-    <div v-if="webCookieEntries.length > 0" class="flex flex-col gap-4">
-      <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <h2 class="text-lg sm:text-xl font-semibold flex items-center gap-2 leading-tight">
-          Browser Session Providers
-        </h2>
-      </div>
-      <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4 lg:grid-cols-3 xl:grid-cols-4">
-        <ProviderCard
-          v-for="[key, info] in webCookieEntries"
-          :key="key"
-          :provider-id="key"
-          :provider="info"
-          :stats="getProviderStats(key, dualAuthTypes(info, key))"
           @toggle="(active: boolean) => handleToggleProvider(key, dualAuthTypes(info, key), active)"
         />
       </div>

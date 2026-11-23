@@ -27,7 +27,7 @@ export const useRegistryStore = defineStore("registry", {
 	}),
 	getters: {
 		loaded: (state) => state.payload !== null,
-		/** `AI_PROVIDERS` — the five category maps merged in the order the router
+		/** `AI_PROVIDERS` — the four category maps merged in the order the router
 		 * serves them. */
 		AI_PROVIDERS(state): Record<string, Record<string, any>> {
 			const p = state.payload?.providers;
@@ -37,14 +37,12 @@ export const useRegistryStore = defineStore("registry", {
 				...(p.freeTier || {}),
 				...(p.oauth || {}),
 				...(p.apikey || {}),
-				...(p.webCookie || {}),
 			};
 		},
 		FREE_PROVIDERS: (state) => state.payload?.providers.free || {},
 		FREE_TIER_PROVIDERS: (state) => state.payload?.providers.freeTier || {},
 		OAUTH_PROVIDERS: (state) => state.payload?.providers.oauth || {},
 		APIKEY_PROVIDERS: (state) => state.payload?.providers.apikey || {},
-		WEB_COOKIE_PROVIDERS: (state) => state.payload?.providers.webCookie || {},
 		MEDIA_PROVIDER_KINDS: (state) => state.payload?.mediaProviderKinds || [],
 		USAGE_SUPPORTED_PROVIDERS: (state) =>
 			state.payload?.usageSupportedProviders || [],

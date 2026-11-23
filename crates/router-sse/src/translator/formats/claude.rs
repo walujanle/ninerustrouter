@@ -40,6 +40,19 @@ fn handles_thinking_blocks(provider: Option<&str>) -> bool {
     provider.is_some_and(|p| p.starts_with("anthropic-compatible")) || provider == Some("deepseek")
 }
 
+/// The request's `model`, stripped of a trailing `(level)` override.
+fn body_model(body: &Value) -> &str {
+    body.get("model").and_then(Value::as_str).unwrap_or("")
+}
+
+/// `isDeepSeekModel(modelId)`: the bare id after any `provider/` prefix starts
+/// with `deepseek-`.
+fn is_deepseek_model_id(model: &str) -> bool {
+    let base = crate::thinking::strip_thinking_suffix(model);
+    let base = base.rsplit('/').next().unwrap_or(&base);
+    base.to_ascii_lowercase().starts_with("deepseek-")
+}
+
 /// `lastCacheableToolIndex(tools)`: the index of the last tool that is not
 /// `defer_loading`, or `None` (the `-1` case).
 pub fn last_cacheable_tool_index(tools: Option<&Value>) -> Option<usize> {
@@ -823,12 +836,19 @@ pub fn prepare_claude_request(body: &mut Value, args: &PrepareClaudeArgs<'_>) {
             .and_then(|m| m.get("role"))
             .and_then(Value::as_str)
             == Some(role::USER);
-        let thinking_enabled = body
+        // DeepSeek models also arrive behind OpenCode Go's `/messages`
+        // transport, and they carry the same thinking pass-back constraint as
+        // the official provider. The adaptive wire format sets
+        // `thinking: {type: "adaptive"}`, which is just as enabled.
+        let deep_seek_served = provider == Some("deepseek")
+            || (provider == Some("opencode-go") && is_deepseek_model_id(body_model(body)));
+        let thinking_type = body
             .get("thinking")
             .and_then(|t| t.get("type"))
-            .and_then(Value::as_str)
-            == Some("enabled")
-            && last_is_user;
+            .and_then(Value::as_str);
+        let thinking_enabled = last_is_user
+            && (thinking_type == Some("enabled")
+                || (deep_seek_served && thinking_type == Some("adaptive")));
 
         let mut last_assistant_processed = false;
         let mut filtered = filtered;
@@ -858,8 +878,7 @@ pub fn prepare_claude_request(body: &mut Value, args: &PrepareClaudeArgs<'_>) {
                 last_assistant_processed = true;
             }
 
-            if handles_thinking_blocks(provider) {
-                let is_deepseek = provider == Some("deepseek");
+            if handles_thinking_blocks(provider) || deep_seek_served {
                 let mut has_tool_use = false;
                 let mut has_kept_thinking = false;
                 let mut kept: Vec<Value> = Vec::with_capacity(content.len());
@@ -883,7 +902,7 @@ pub fn prepare_claude_request(body: &mut Value, args: &PrepareClaudeArgs<'_>) {
                         {
                             continue;
                         }
-                        if is_deepseek {
+                        if deep_seek_served {
                             has_kept_thinking = true;
                             kept.push(block);
                         } else {
@@ -1321,6 +1340,67 @@ mod tests {
             },
         );
         assert!(body.get("context_management").is_some());
+    }
+
+    #[test]
+    fn prepare_passes_back_a_deepseek_thinking_block_behind_opencode_go() {
+        // OpenCode Go's `/messages` transport serves DeepSeek models and carries
+        // the same pass-back constraint, in either thinking wire shape.
+        for thinking in [
+            json!({"type": "enabled", "budget_tokens": 2048}),
+            json!({"type": "adaptive"}),
+        ] {
+            let mut body = json!({
+                "model": "opencode-go/deepseek-v4.1-flash",
+                "thinking": thinking,
+                "messages": [
+                    {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+                    {"role": "assistant", "content": [
+                        {"type": "thinking", "thinking": "why"},
+                        {"type": "tool_use", "id": "toolu_1", "name": "x", "input": {}},
+                    ]},
+                ],
+            });
+            prepare_claude_request(
+                &mut body,
+                &PrepareClaudeArgs {
+                    provider: Some("opencode-go"),
+                    ..Default::default()
+                },
+            );
+            let blocks = body["messages"][1]["content"].as_array().unwrap();
+            assert_eq!(
+                blocks.len(),
+                2,
+                "the thinking block is kept, not duplicated"
+            );
+            assert_eq!(blocks[0]["type"], json!("thinking"));
+            assert_eq!(blocks[0]["thinking"], json!("why"));
+        }
+
+        // A non-DeepSeek model on the same transport is not a thinking-block
+        // provider, so its history is forwarded untouched.
+        let mut body = json!({
+            "model": "opencode-go/glm-5.3",
+            "thinking": {"type": "enabled", "budget_tokens": 2048},
+            "messages": [
+                {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+                {"role": "assistant", "content": [
+                    {"type": "thinking", "thinking": "why"},
+                    {"type": "tool_use", "id": "toolu_1", "name": "x", "input": {}},
+                ]},
+            ],
+        });
+        prepare_claude_request(
+            &mut body,
+            &PrepareClaudeArgs {
+                provider: Some("opencode-go"),
+                ..Default::default()
+            },
+        );
+        let blocks = body["messages"][1]["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0]["thinking"], json!("why"));
     }
 
     #[test]

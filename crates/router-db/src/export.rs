@@ -3,6 +3,10 @@
 //! The payload shape is a frontend contract: field order here is the order the
 //! dashboard sees. Export spreads the `data` blob first and then overlays the
 //! fixed columns, so a column always wins over a same-named key in the blob.
+//!
+//! [`export_db_scoped`] narrows a backup to named API-key providers. Import
+//! only touches the sections a payload carries, so restoring a scoped file
+//! adds those connections and leaves everything else in place.
 
 use rusqlite::Connection;
 use serde_json::{Map, Value, json};
@@ -139,6 +143,66 @@ pub fn export_db(conn: &Connection) -> DbResult<Value> {
     Ok(Value::Object(out))
 }
 
+/// `exportDb()` narrowed to the named API-key providers.
+///
+/// Only `providerConnections` survives, and only rows whose `authType` is
+/// `apikey` — an OAuth row has no key to back up, and a free/long-lived
+/// credential is not a key either. The other sections are dropped so an import
+/// of this file cannot touch them.
+pub fn export_db_scoped(conn: &Connection, providers: &[&str]) -> DbResult<Value> {
+    let full = export_db(conn)?;
+    let mut out = Map::new();
+    out.insert(
+        "scope".into(),
+        json!({ "kind": "apikey-connections", "providers": providers }),
+    );
+    let kept: Vec<Value> = full
+        .get("providerConnections")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter(|row| {
+                    let provider = row.get("provider").and_then(Value::as_str).unwrap_or("");
+                    providers.contains(&provider)
+                        && row.get("authType").and_then(Value::as_str) == Some("apikey")
+                })
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    out.insert("providerConnections".into(), Value::Array(kept));
+    Ok(Value::Object(out))
+}
+
+/// The `providerConnections` delete an import runs.
+///
+/// A full backup (no `scope`) clears the table. A scoped one clears only the
+/// rows it could have written — same providers, `apikey` only — so an OAuth
+/// connection on the same provider survives the restore.
+fn scoped_connection_delete(payload: &Map<String, Value>) -> String {
+    let providers: Vec<String> = payload
+        .get("scope")
+        .filter(|s| s.get("kind").and_then(Value::as_str) == Some("apikey-connections"))
+        .and_then(|s| s.get("providers"))
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .filter_map(Value::as_str)
+                // `'` cannot appear in a provider id, but quoting it is one
+                // character and removes the question.
+                .map(|p| format!("'{}'", p.replace('\'', "''")))
+                .collect()
+        })
+        .unwrap_or_default();
+    if providers.is_empty() {
+        return "DELETE FROM providerConnections".to_string();
+    }
+    format!(
+        "DELETE FROM providerConnections WHERE authType = 'apikey' AND provider IN ({})",
+        providers.join(", ")
+    )
+}
+
 fn opt<T: Into<Value>>(v: Option<T>) -> Value {
     v.map_or(Value::Null, Into::into)
 }
@@ -162,7 +226,9 @@ fn kv_values(conn: &Connection, scope: &str) -> DbResult<Value> {
 
 /// `importDb(payload)`.
 ///
-/// Wipes every table except `_meta` and re-inserts. The whole thing runs in one
+/// Wipes every table the payload names and re-inserts it. A section it does not
+/// name is left alone, so a scoped file restores additively; a full backup names
+/// every section, so a full restore is unchanged. The whole thing runs in one
 /// transaction, so a malformed payload leaves the database untouched. Must run
 /// inside a transaction.
 pub fn import_db(conn: &Connection, payload: &Value) -> DbResult<Value> {
@@ -170,15 +236,40 @@ pub fn import_db(conn: &Connection, payload: &Value) -> DbResult<Value> {
         return Err(DbError::Invalid("Invalid database payload".into()));
     };
 
-    conn.execute_batch(
-        "DELETE FROM settings;
-         DELETE FROM providerConnections;
-         DELETE FROM providerNodes;
-         DELETE FROM proxyPools;
-         DELETE FROM apiKeys;
-         DELETE FROM combos;
-         DELETE FROM kv WHERE scope IN ('modelAliases', 'customModels', 'mitmAlias', 'pricing');",
-    )?;
+    // A section the payload does not carry is left alone, so a scoped export
+    // restores additively instead of wiping the tables it never mentioned. A
+    // full backup names every section, so a full restore is unchanged.
+    //
+    // A scoped file also narrows `providerConnections` to the providers it
+    // names, so re-importing it replaces only those rows instead of dropping
+    // every connection the file never carried.
+    let mut wipes: Vec<String> = Vec::new();
+    for (key, sql) in [
+        ("settings", "DELETE FROM settings"),
+        ("providerNodes", "DELETE FROM providerNodes"),
+        ("proxyPools", "DELETE FROM proxyPools"),
+        ("apiKeys", "DELETE FROM apiKeys"),
+        ("combos", "DELETE FROM combos"),
+    ] {
+        if payload.contains_key(key) {
+            wipes.push(sql.to_string());
+        }
+    }
+    if payload.contains_key("providerConnections") {
+        wipes.push(scoped_connection_delete(payload));
+    }
+    // The kv scopes share one table, so each present one needs its own delete.
+    for scope in ["modelAliases", "customModels", "mitmAlias", "pricing"] {
+        if payload.contains_key(scope) {
+            wipes.push(format!("DELETE FROM kv WHERE scope = '{scope}'"));
+        }
+    }
+    if !wipes.is_empty() {
+        conn.execute_batch(&wipes.join(
+            ";
+",
+        ))?;
+    }
 
     if let Some(s) = payload.get("settings") {
         conn.execute(
@@ -549,6 +640,77 @@ mod tests {
         let conn = db();
         assert!(import_db(&conn, &json!([])).is_err());
         assert!(import_db(&conn, &json!("nope")).is_err());
+    }
+
+    #[test]
+    fn a_scoped_export_keeps_only_the_named_api_key_rows() {
+        let conn = db();
+        import_db(
+            &conn,
+            &json!({
+                "providerConnections": [
+                    {"id": "a", "provider": "deepseek", "authType": "apikey", "apiKey": "sk-a"},
+                    {"id": "b", "provider": "mistral", "authType": "apikey", "apiKey": "sk-b"},
+                    {"id": "c", "provider": "codex", "authType": "oauth", "accessToken": "tok"},
+                ],
+            }),
+        )
+        .unwrap();
+
+        let out = export_db_scoped(&conn, &["deepseek", "codex"]).unwrap();
+        let rows = out["providerConnections"].as_array().unwrap();
+        assert_eq!(rows.len(), 1, "only the named apikey row survives");
+        assert_eq!(rows[0]["id"], json!("a"));
+        // A scoped file carries no other section, so importing one cannot wipe
+        // the tables it never mentioned.
+        assert!(out.get("settings").is_none());
+        assert!(out.get("apiKeys").is_none());
+        assert!(out.get("combos").is_none());
+        assert_eq!(out["scope"]["kind"], json!("apikey-connections"));
+    }
+
+    #[test]
+    fn importing_a_scoped_file_leaves_unmentioned_tables_alone() {
+        let conn = db();
+        import_db(
+            &conn,
+            &json!({
+                "settings": {"cloudEnabled": true},
+                "providerConnections": [
+                    {"id": "keep", "provider": "mistral", "authType": "apikey", "apiKey": "sk-m"},
+                ],
+                "apiKeys": [{"id": "k1", "key": "sk-9router-x"}],
+            }),
+        )
+        .unwrap();
+
+        // A scoped file names only its own connection.
+        let scoped = export_db_scoped(&conn, &["deepseek"]).unwrap();
+        let mut scoped = scoped;
+        scoped["providerConnections"] = json!([
+            {"id": "new", "provider": "deepseek", "authType": "apikey", "apiKey": "sk-d"},
+        ]);
+        import_db(&conn, &scoped).unwrap();
+
+        let full = export_db(&conn).unwrap();
+        let mut ids: Vec<&str> = full["providerConnections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|r| r["id"].as_str())
+            .collect();
+        ids.sort_unstable();
+        assert_eq!(
+            ids,
+            vec!["keep", "new"],
+            "the scoped restore replaces only its own providers"
+        );
+        assert_eq!(
+            full["apiKeys"][0]["key"],
+            json!("sk-9router-x"),
+            "untouched"
+        );
+        assert_eq!(full["settings"]["cloudEnabled"], json!(true), "untouched");
     }
 
     #[test]

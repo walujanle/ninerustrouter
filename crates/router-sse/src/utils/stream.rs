@@ -81,6 +81,12 @@ pub struct SseStreamOptions {
     /// Client format.
     pub source_format: String,
     pub provider: Option<String>,
+    /// `quirks.reasoningAliasFields`: the lane streams thinking as the
+    /// OpenRouter aliases (`reasoning`, `reasoning_details[]`) instead of
+    /// `reasoning_content`. Every OpenAI-shaped client, the usage accountant
+    /// and the SSE→JSON aggregator read `reasoning_content`, so a passthrough
+    /// delta is lifted before it is forwarded.
+    pub reasoning_alias_fields: bool,
     pub tool_name_map: Option<HashMap<String, String>>,
     pub custom_tool_names: Vec<String>,
     pub model: Option<String>,
@@ -104,6 +110,7 @@ impl Default for SseStreamOptions {
             target_format: None,
             source_format: formats::OPENAI.to_string(),
             provider: None,
+            reasoning_alias_fields: false,
             tool_name_map: None,
             custom_tool_names: Vec::new(),
             model: None,
@@ -136,6 +143,29 @@ fn is_debug_enabled() -> bool {
 /// JS `String.prototype.length`: UTF-16 code units, not bytes or chars.
 fn js_len(text: &str) -> i64 {
     text.encode_utf16().count() as i64
+}
+
+/// `liftReasoningAliases(delta)`: add `reasoning_content` from a vendor alias
+/// when the delta carries none of its own.
+///
+/// Only ever adds the field — `reasoning` and `reasoning_details[]` stay intact
+/// for clients that read them — and returns whether it wrote anything.
+fn lift_reasoning_aliases(delta: &mut serde_json::Map<String, Value>) -> bool {
+    if delta
+        .get("reasoning_content")
+        .and_then(Value::as_str)
+        .is_some_and(|s| !s.is_empty())
+    {
+        return false;
+    }
+    let lifted = crate::translator::concerns::primitives::extract_reasoning_text(&Value::Object(
+        delta.clone(),
+    ));
+    if lifted.is_empty() {
+        return false;
+    }
+    delta.insert("reasoning_content".into(), Value::String(lifted));
+    true
 }
 
 /// One stream's transform state.
@@ -425,15 +455,19 @@ impl SseStream {
                     }
                     // An empty `tool_calls: []` makes @ai-sdk/openai-compatible
                     // end reasoning on every chunk.
-                    if let Some(delta) = choice.get_mut("delta").and_then(Value::as_object_mut)
-                        && js_truthy_opt(delta.get("tool_calls"))
-                        && delta
-                            .get("tool_calls")
-                            .and_then(Value::as_array)
-                            .is_some_and(|a| a.is_empty())
-                    {
-                        delta.shift_remove("tool_calls");
-                        fields_injected = true;
+                    if let Some(delta) = choice.get_mut("delta").and_then(Value::as_object_mut) {
+                        if self.opts.reasoning_alias_fields && lift_reasoning_aliases(delta) {
+                            fields_injected = true;
+                        }
+                        if js_truthy_opt(delta.get("tool_calls"))
+                            && delta
+                                .get("tool_calls")
+                                .and_then(Value::as_array)
+                                .is_some_and(|a| a.is_empty())
+                        {
+                            delta.shift_remove("tool_calls");
+                            fields_injected = true;
+                        }
                     }
                 }
             }
@@ -924,6 +958,40 @@ mod tests {
             StreamMode::Passthrough,
             formats::OPENAI,
         ))
+    }
+
+    #[test]
+    fn a_passthrough_delta_lifts_the_reasoning_aliases_only_when_the_lane_asks() {
+        let chunk = b"data: {\"choices\":[{\"delta\":{\"reasoning\":\"why\"}}]}
+
+";
+        let out = text_of(passthrough().push(chunk));
+        assert!(
+            !out.contains("reasoning_content"),
+            "the alias is not lifted without the quirk: {out}"
+        );
+
+        let mut opts = SseStreamOptions::new(StreamMode::Passthrough, formats::OPENAI);
+        opts.reasoning_alias_fields = true;
+        let mut lifted = SseStream::new(opts);
+        let out = text_of(lifted.push(chunk));
+        assert!(out.contains("\"reasoning_content\":\"why\""), "{out}");
+        // The alias survives for a client that reads it.
+        assert!(out.contains("\"reasoning\":\"why\""), "{out}");
+    }
+
+    #[test]
+    fn an_existing_reasoning_content_is_never_overwritten_by_the_alias() {
+        let mut opts = SseStreamOptions::new(StreamMode::Passthrough, formats::OPENAI);
+        opts.reasoning_alias_fields = true;
+        let mut stream = SseStream::new(opts);
+        // Already carrying reasoning_content: the alias must not overwrite it.
+        let out = text_of(stream.push(
+            b"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"real\",\"reasoning\":\"alias\"}}]}
+
+",
+        ));
+        assert!(out.contains("\"reasoning_content\":\"real\""), "{out}");
     }
 
     fn translate(target: &str, source: &str) -> SseStream {

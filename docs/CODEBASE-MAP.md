@@ -84,7 +84,7 @@ module per table group. This crate is the shared-schema boundary: it must stay b
 | `src/meta_store.rs` | Key/value access over the `_meta` table. | `get_meta`, `get_meta_i64`, `set_meta` |
 | `src/identity.rs` | Machine identity and API-key derivation reproduced exactly so existing keys stay valid. Byte-critical: a wrong byte changes every client's key. | `consistent_machine_id`, `jwt_secret`, `generate_api_key_with_machine`, `parse_api_key`, `verify_api_key_crc`, `ApiKeyParts` |
 | `src/backup.rs` | Lite safety backups taken before a schema change, plus mtime-based pruning. | `KEEP_BACKUPS`, `BACKUP_EXCLUDE_TABLES`, `backup_db_lite`, `prune_old_backups` |
-| `src/export.rs` | Whole-database export/import; payload shape and field order are a frontend contract. | `export_db`, `import_db`, `kv_map`, `take_rest` |
+| `src/export.rs` | Whole-database export/import; payload shape and field order are a frontend contract. `export_db_scoped` narrows a backup to the API-key connections of named providers. | `export_db`, `export_db_scoped`, `import_db`, `kv_map`, `take_rest` |
 | `src/stats.rs` | Process-global live-request state (pending counts, error marker, connection cache) behind one `OnceLock`. | `UsageState`, `state`, `track_pending_request`, `sweep_stale_pending`, `active_requests`, `split_model_key` |
 | `src/config_cache.rs` | One `Arc<ConfigSnapshot>` per process for the chat hot path's read-mostly tables (`settings`, `combos`, `modelAliases`, `providerNodes`, `disabledModels`). Dropped by the SQLite update hook and by a 2 s TTL. | `ConfigSnapshot`, `snapshot`, `invalidate_all`, `TTL` |
 | `src/error.rs` | Error type for the persistence layer. | `DbError`, `DbResult`, `is_busy`, `ProviderNameConflict`, `Busy` |
@@ -214,7 +214,6 @@ The pipeline is `handlers/chat.rs` (HTTP entry, combo/fusion/account loop) → `
 
 | File | Purpose | Key symbols |
 |---|---|---|
-| `src/executors/deepseek_web/` | DeepSeek web executor, split by concern: `mod.rs` (token exchange, session create, completion, error mapping), `pow.rs` (DeepSeekHashV1), `prompt.rs` (`messages[]` to the flat `prompt`), `stream.rs` (DeepSeek SSE to OpenAI chunks). | `DeepSeekWebExecutor`, `pow::find_nonce`, `pow::MAX_DIFFICULTY`, `prompt::messages_to_prompt`, `stream::transform_stream`, `stream::completion_body` |
 | `src/executors/executor.rs` | The `Executor` contract: request/response types and the shared send-retry-URL-fallback loop. | `trait Executor`, `ExecuteRequest`, `UpstreamBody`, `UpstreamResponse`, `ExecError`, `execute` |
 | `src/executors/mod.rs` | Executor resolution: special executors built fresh per call, everything else cached. | `get_executor`, `has_specialized_executor`, `SPECIAL`, `DEFAULT_CACHE` |
 | `src/executors/default.rs` | Registry-driven default transport: auth application, compat URL building, header hooks, credential refresh. | `DefaultExecutor`, `AuthDescriptor`, `compat_build_url`, `apply_auth`, `refresh_for_provider` |
@@ -226,7 +225,6 @@ The pipeline is `handlers/chat.rs` (HTTP entry, combo/fusion/account loop) → `
 | `src/executors/codex.rs` | Codex Responses executor: request-shape invariants, session/account headers, image prefetch, SSE-peek retry, and the ECMAScript `\p{...}` pattern sanitizer Codex rejects with a 400. | `CodexExecutor`, `BaseLoop`, `normalize_codex_tools`, `peek_sse_transient_error`, `has_unicode_property_escape` |
 | `src/executors/commandcode.rs` | CommandCode executor: forces stream, re-frames upstream NDJSON as SSE, retries transient statuses. | `CommandCodeExecutor`, `inspect_and_wrap`, `frame_as_sse`, `MAX_RETRIES` |
 | `src/executors/opencode.rs` | OpenCode free-tier executor plus shared session/request-id derivation and responses-tool normalization. | `OpenCodeExecutor`, `LoopRunner`, `generate_session_id`, `normalize_responses_tools` |
-| `src/executors/deepseek_web/` | DeepSeek web executor: `userToken` exchange, session create, DeepSeekHashV1 proof-of-work, and the DeepSeek-SSE to OpenAI-chunk transform. | `DeepSeekWebExecutor`, `pow::find_nonce`, `prompt::messages_to_prompt`, `stream::transform_stream` |
 | `src/executors/opencode_go.rs` | OpenCode Go executor: hashed session ids, responses-model routing, delegates to the default loop. | `OpenCodeGoExecutor`, `is_responses_model`, `RESPONSES_BASE_URL` |
 | `src/handlers/chat.rs` | HTTP `/v1` chat entry: auth and bypass, combo/fusion/capacity dispatch, per-account selection loop with cooldown and fallback. | `handle_chat`, `ChatRequest`, `handle_single_model_chat`, `run_fusion`, `is_relay_edge_error` |
 | `src/handlers/chat_core.rs` | Orchestrator: resolves source/target format and transport, applies token-saver chain, calls the executor, handles refresh-retry, dispatches. | `handle_chat_core`, `ChatContext`, `ChatBody`, `ChatResult`, `finish_non_streaming` |
@@ -301,7 +299,7 @@ object. Everything here is byte-compare sensitive.
 | `src/utils/ollama_transform.rs` | OpenAI SSE → Ollama NDJSON bridge for `POST /v1/api/chat`. | `PendingToolCall`, `done_line` |
 | `src/utils/reasoning_injector.rs` | Injects a single-space `reasoning_content` placeholder into assistant tool-call turns for providers that reject it without one. | `inject_reasoning_content`, `PLACEHOLDER` |
 | `src/utils/tool_deduper.rs` | Drops built-in client tools when an equivalent MCP tool is present. | `RULES`, `Pattern`, `Rule` |
-| `src/rtk/mod.rs` | **Token saver entry.** `compress_messages` runs in place on the source-format body before translation (and again post-translate); fail-open; never grows, never empties. Also `inject_caveman`/`inject_ponytail`. | `compress_messages`, `compress_text`, `compress_kiro_format`, `RtkStats`, `inject_caveman`, `inject_ponytail` |
+| `src/rtk/mod.rs` | **Token saver entry.** `compress_messages` runs in place on the source-format body before translation (and again post-translate); fail-open; never grows, never empties. Also `inject_caveman`/`inject_ponytail`/`inject_custom_prompt`. | `compress_messages`, `compress_text`, `compress_kiro_format`, `RtkStats`, `inject_caveman`, `inject_ponytail`, `inject_custom_prompt` |
 | `src/rtk/autodetect.rs` | Picks a filter from the text shape; detection order is load-bearing (build-output before porcelain). | `auto_detect_filter`, `RE_BUILD_OUTPUT`, `RE_GIT_DIFF`, `RE_PORCELAIN` |
 | `src/rtk/filters/mod.rs` | Filter registry + shared caps and `safe_apply` (panic-catch). | `resolve_filter`, `apply_filter`, `safe_apply`, `RAW_CAP`, `MIN_COMPRESS_SIZE`, `DETECT_WINDOW` |
 | `src/rtk/filters/git.rs` | git-diff, git-status, git-log compressors. | `git_diff` |

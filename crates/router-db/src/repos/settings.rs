@@ -68,6 +68,10 @@ pub fn default_settings() -> Map<String, Value> {
     m.insert("cavemanLevel".into(), json!("full"));
     m.insert("ponytailEnabled".into(), json!(false));
     m.insert("ponytailLevel".into(), json!("full"));
+    // User-authored system prompt, injected independently of the built-in
+    // savers, so it works with all of them off.
+    m.insert("customPromptEnabled".into(), json!(false));
+    m.insert("customPrompt".into(), json!(""));
     m.insert("pxpipeEnabled".into(), json!(false));
     m.insert("pxpipeAutoInstall".into(), json!(true));
     m.insert("pxpipeMinChars".into(), json!(25000));

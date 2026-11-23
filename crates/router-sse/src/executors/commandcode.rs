@@ -795,7 +795,7 @@ mod tests {
         let headers = executor
             .build_headers(&credentials, true, "https://x", "m", Some(&body))
             .unwrap();
-        assert_eq!(headers.get("x-command-code-version").unwrap(), "1.88.0");
+        assert_eq!(headers.get("x-command-code-version").unwrap(), "1.88.5");
         assert_eq!(headers.get("x-cli-environment").unwrap(), "production");
         assert_eq!(headers.get("x-cli-surface").unwrap(), "cli");
         assert_eq!(headers.get("x-taste-learning").unwrap(), "false");

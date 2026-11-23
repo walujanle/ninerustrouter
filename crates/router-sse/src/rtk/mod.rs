@@ -288,6 +288,18 @@ pub fn inject_caveman(body: &mut Value, format: &str, level: &str) {
     }
 }
 
+/// `injectCustomPrompt(body, format, text)`: a user-authored instruction,
+/// independent of the savers. Blank text is a no-op, never an empty system
+/// message. Returns whether it wrote anything.
+pub fn inject_custom_prompt(body: &mut Value, format: &str, text: &str) -> bool {
+    let text = text.trim();
+    if text.is_empty() {
+        return false;
+    }
+    inject_system_prompt(body, format, text);
+    true
+}
+
 /// `injectPonytail(body, format, level)`.
 pub fn inject_ponytail(body: &mut Value, format: &str, level: &str) {
     if let Some(prompt) = prompts::ponytail_prompt(level) {
@@ -298,6 +310,7 @@ pub fn inject_ponytail(body: &mut Value, format: &str, level: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::translator::formats;
     use serde_json::json;
 
     fn long_diff() -> String {
@@ -312,6 +325,63 @@ mod tests {
             lines.push(format!("+added line {i} {}", "x".repeat(20)));
         }
         lines.join("\n")
+    }
+
+    #[test]
+    fn a_custom_prompt_lands_in_the_format_s_system_slot() {
+        // Blank text is a no-op, not an empty system message.
+        let mut body = json!({"messages": [{"role": "user", "content": "hi"}]});
+        assert!(!inject_custom_prompt(
+            &mut body,
+            formats::OPENAI,
+            "   
+"
+        ));
+        assert_eq!(body["messages"].as_array().unwrap().len(), 1);
+
+        // OpenAI chat: appended to the existing system message.
+        let mut body = json!({"messages": [
+            {"role": "system", "content": "hello"},
+            {"role": "user", "content": "hi"},
+        ]});
+        assert!(inject_custom_prompt(&mut body, formats::OPENAI, "MINE"));
+        assert_eq!(
+            body["messages"][0]["content"],
+            json!(
+                "hello
+
+MINE"
+            )
+        );
+
+        // Claude: the dedicated field, not `messages`.
+        let mut body = json!({"system": "hello", "messages": [{"role": "user", "content": "hi"}]});
+        assert!(inject_custom_prompt(&mut body, formats::CLAUDE, "MINE"));
+        assert_eq!(
+            body["system"],
+            json!(
+                "hello
+
+MINE"
+            )
+        );
+        assert_eq!(body["messages"].as_array().unwrap().len(), 1);
+
+        // Responses: `instructions`.
+        let mut body = json!({"instructions": "hello", "input": []});
+        assert!(inject_custom_prompt(
+            &mut body,
+            formats::OPENAI_RESPONSES,
+            "MINE"
+        ));
+        assert_eq!(
+            body["instructions"],
+            json!(
+                "hello
+
+MINE"
+            )
+        );
     }
 
     #[test]

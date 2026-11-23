@@ -25,8 +25,8 @@ use crate::state::AppState;
 /// `GET /api/registry`.
 ///
 /// Body:
-/// - `providers`: the five category maps (`free`, `freeTier`, `oauth`,
-///   `apikey`, `webCookie`), each `id → buildProviderEntry`.
+/// - `providers`: the four category maps (`free`, `freeTier`, `oauth`,
+///   `apikey`), each `id → buildProviderEntry`.
 /// - `mediaProviderKinds`: `MEDIA_PROVIDER_KINDS`.
 /// - `usageSupportedProviders` / `usageApikeyProviders`: `features.usage` and
 ///   `features.usageApikey` ids in registry order.

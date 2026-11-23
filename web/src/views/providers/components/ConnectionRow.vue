@@ -115,23 +115,14 @@ const rowAuthType = computed(
 	() => props.connection.authType || (props.isOAuth ? "oauth" : "apikey"),
 );
 const isOAuthConnection = computed(() => rowAuthType.value === "oauth");
-const isCookieConnection = computed(() => rowAuthType.value === "cookie");
-const authIcon = computed(() =>
-	isCookieConnection.value ? "cookie" : isOAuthConnection.value ? "lock" : "key",
-);
-const authLabel = computed(() =>
-	isOAuthConnection.value ? "OAuth" : isCookieConnection.value ? "Cookie" : "API Key",
-);
+const authIcon = computed(() => (isOAuthConnection.value ? "lock" : "key"));
+const authLabel = computed(() => (isOAuthConnection.value ? "OAuth" : "API Key"));
 const displayName = computed(
 	() =>
 		props.connection.name?.trim() ||
 		props.connection.email?.trim() ||
 		props.connection.displayName?.trim() ||
-		(isOAuthConnection.value
-			? "OAuth Account"
-			: isCookieConnection.value
-				? "Cookie Account"
-				: "API Key"),
+		(isOAuthConnection.value ? "OAuth Account" : "API Key"),
 );
 const secondaryDisplayName = computed(() => {
 	const name = props.connection.name?.trim();

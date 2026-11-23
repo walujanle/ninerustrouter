@@ -340,7 +340,6 @@ pub async fn create(
         Err(error) => return ApiError::bad_request(error).into_response(),
     };
 
-    let is_web_cookie_provider = category_of(provider) == Some("webCookie");
     let supports_api_key_mode = registry()
         .get(provider)
         .and_then(|p| p.auth_modes.as_ref())
@@ -348,7 +347,6 @@ pub async fn create(
     let is_valid_provider = category_of(provider) == Some("apikey")
         || category_of(provider) == Some("freeTier")
         || supports_api_key_mode
-        || is_web_cookie_provider
         || is_openai_compatible_provider(provider)
         || is_anthropic_compatible_provider(provider)
         || is_custom_embedding_provider(provider);
@@ -358,11 +356,7 @@ pub async fn create(
 
     let api_key = conn_str(&payload, "apiKey").unwrap_or("");
     if api_key.is_empty() {
-        let message = if is_web_cookie_provider {
-            "Cookie value is required"
-        } else {
-            "API Key is required"
-        };
+        let message = "API Key is required";
         return ApiError::bad_request(message).into_response();
     }
 
@@ -449,14 +443,7 @@ pub async fn create(
 
     let mut data = Map::new();
     data.insert("provider".into(), json!(provider));
-    data.insert(
-        "authType".into(),
-        json!(if is_web_cookie_provider {
-            "cookie"
-        } else {
-            "apikey"
-        }),
-    );
+    data.insert("authType".into(), json!("apikey"));
     data.insert("name".into(), json!(connection_name));
     data.insert("apiKey".into(), json!(api_key));
     data.insert(
@@ -2479,11 +2466,14 @@ async fn test_single_connection(state: &AppState, id: &str) -> TestOutcome {
     }
 
     let started = Instant::now();
+    // Only `oauth` needs the OAuth probe. Everything else — including a row
+    // written by an older build with a retired auth type — is a stored secret
+    // checked against the provider's own endpoint.
     let auth_type = conn_str(&connection, "authType").unwrap_or("");
-    let result = if auth_type == "apikey" || auth_type == "cookie" {
-        test_api_key_connection(&connection, &proxy).await
-    } else {
+    let result = if auth_type == "oauth" {
         test_oauth_connection(state, &connection, &proxy).await
+    } else {
+        test_api_key_connection(&connection, &proxy).await
     };
     let latency_ms = started.elapsed().as_millis() as i64;
 
@@ -2869,25 +2859,6 @@ pub async fn validate(
             };
             let valid = matches!(
                 plain_probe(&url, "GET", &headers, None).await,
-                Some(s) if (200..300).contains(&s)
-            );
-            Json(valid_body(valid)).into_response()
-        }
-        // The userToken is exchanged for an access token; `/users/current` is
-        // the only endpoint that proves it without also creating a session.
-        "deepseek-web" => {
-            let headers = vec![
-                ("Content-Type".to_string(), "application/json".to_string()),
-                ("Authorization".to_string(), format!("Bearer {api_key}")),
-            ];
-            let valid = matches!(
-                plain_probe(
-                    "https://chat.deepseek.com/api/v0/users/current",
-                    "POST",
-                    &headers,
-                    Some(json!({})),
-                )
-                .await,
                 Some(s) if (200..300).contains(&s)
             );
             Json(valid_body(valid)).into_response()
