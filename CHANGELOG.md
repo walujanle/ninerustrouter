@@ -5,6 +5,27 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-11-23
+
+### Added
+
+- `/v1/models` publishes `thinking_levels` per model and `context_length` /
+  `max_completion_tokens` on combo entries, so a client can build an effort
+  selector and size a request from the gateway instead of a local table.
+
+### Fixed
+
+- A combo seat spelled `provider/model(level)` resolved to the 200k floor
+  instead of the model's own window, because the `(level)` suffix and the
+  provider alias were taken as part of the model id.
+- The OpenCode free lane's models resolve their real context windows and
+  thinking levels; ids the live catalog serves but the registry never listed
+  no longer fall back to the floor.
+
+### Security
+
+- `url` 2.5.9 (RUSTSEC-2026-0592: a stack overflow on nested `blob:` URLs).
+
 ## [0.1.5] - 2026-11-05
 
 ### Added
